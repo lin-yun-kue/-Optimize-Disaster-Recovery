@@ -15,13 +15,15 @@ import random
 import copy
 import dill
 import statistics
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple, TYPE_CHECKING
 import matplotlib.pyplot as plt
 from matplotlib.axes import Axes
 from matplotlib.figure import Figure
 from dataclasses import dataclass, field
 from simulation import *
-from policies import Policy
+
+if TYPE_CHECKING:
+    from policies import Policy
 
 
 # ============================================================================
@@ -70,18 +72,6 @@ class SimulationRNG:
 class SimPySimulationEngine:
     """
     Simulation engine wrapper for your disaster-resource SimPy simulation.
-
-    Responsibilities:
-      - create the simpy.Environment and domain objects (IdleResources, Depot, DumpSite, DisasterStore, resources)
-      - provide initialize(), step(), run(), get_results()
-      - clone(), save(filepath), load(filepath)
-      - simple logging and action_log to help build deterministic replay if needed
-
-    Usage:
-      engine = SimPySimulationEngine(policy_func=my_policy, seed=42, config=my_config)
-      engine.initialize()          # build nodes/resources/processes (but don't advance)
-      engine.run(max_time=1000)    # run until end condition / events exhausted
-      engine.clone()               # best-effort clone via dill
     """
 
     MAX_SIM_TIME = 20_000
@@ -95,6 +85,7 @@ class SimPySimulationEngine:
         self.policy = policy
         self.seed = seed
         self.rng = SimulationRNG(seed)
+        self.decision_rng = SimulationRNG(seed + 99999)
         self.live_plot = live_plot
 
         # SimPy environment and domain objects
@@ -109,15 +100,21 @@ class SimPySimulationEngine:
         self.known_disasters: Dict[int, Any] = {}
         self.disaster_histories: Dict[int, List[float]] = {}
         self.non_idle_time = 0.0
+        self.tournament_decisions: List[Tuple[float, str]] = []
+
+        # replay
+        self.decision_log: List[int] = []
+        self.replay_buffer: List[int] = []
+        self.branch_decision: Optional[int] = None
 
         # whether the scheduled "add_disasters" is present and its process reference
         self._disasters_process: Optional[simpy.Process] = None
         self._main_loop_process: Optional[simpy.Process] = None
 
-        if self.live_plot:
-            self.fig, self.axs = self.setup_plot()
+        self.fig = None
+        self.axs = None
 
-        print(f"Running {self.policy.name} with seed {self.seed} and plotting {self.live_plot}.")
+        print(f"Running {self.policy.name} with seed {self.seed}.")
 
     # ----------------------------------------------------------------------------
     # MARK: Run Control
@@ -126,6 +123,8 @@ class SimPySimulationEngine:
         """
         Run to completion (EmptySchedule).
         """
+        if self.live_plot and self.fig is None:
+            self.fig, self.axs = self.setup_plot()
 
         self._disasters_process = self.env.process(self.add_disasters())
         self._main_loop_process = self.env.process(self.loop())
@@ -209,7 +208,32 @@ class SimPySimulationEngine:
         while True:
             resource = yield self.env.process(self.idle_resources.get_any_resource())
             yield self.env.process(self.disaster_store.wait_for_any())
-            yield self.env.process(self.policy.func(resource, self.disaster_store, self.env))
+
+            target_disaster = None
+
+            if len(self.replay_buffer) > 0:
+                # Force the decision from history
+                target_id = self.replay_buffer.pop(0)
+
+                # Find the disaster object with this ID
+                candidates = [d for d in self.disaster_store.items if d.id == target_id]
+                target_disaster = candidates[0]
+            else:
+                # Ask the policy
+                if len(self.disaster_store.items) == 1:
+                    target_disaster = self.disaster_store.items[0]
+                else:
+                    target_disaster = self.policy.func(resource, self.disaster_store.items, self.env)
+
+                # If this was the VERY FIRST move after replay buffer emptied, capture it
+                if self.branch_decision is None:
+                    self.branch_decision = target_disaster.id
+
+                # Record this decision for future replays
+                self.decision_log.append(target_disaster.id)
+
+            # disaster = self.policy.func(resource, self.disaster_store.items, self.env)
+            target_disaster.transfer_resource(resource)
 
     # ----------------------------------------------------------------------------
     # MARK: Disaster Generator
@@ -219,24 +243,50 @@ class SimPySimulationEngine:
         min_size = SimulationConfig.LANDSLIDE_MIN_SIZE
         max_size = SimulationConfig.LANDSLIDE_MAX_SIZE
 
-        initial_delay = random.randint(10, 20)
+        initial_delay = self.rng.randint(10, 20)
         yield self.env.timeout(initial_delay)
 
         dump_site = [d for d in self.resource_nodes if isinstance(d, DumpSite)][0]
 
         for i in range(SimulationConfig.NUM_STARTING_LANDSLIDES):
-            landslide_size = random.randint(min_size, max_size)
+            landslide_size = self.rng.randint(min_size, max_size)
             landslide = Landslide(self, landslide_size, dump_site)
             self.disaster_store.put(landslide)
 
         for i in range(SimulationConfig.NUM_LANDSLIDES):
-            landslide_size = random.randint(min_size, max_size)
+            landslide_size = self.rng.randint(min_size, max_size)
             landslide = Landslide(self, landslide_size, dump_site)
             self.disaster_store.put(landslide)
 
-            delay = random.randint(100, 500)
+            delay = self.rng.randint(100, 500)
             if i < SimulationConfig.NUM_LANDSLIDES - 1:
                 yield self.env.timeout(delay)
+
+    def initialize_world(self):
+        """Initialize the world with a randomized set of resources."""
+        depot = Depot(self)
+        dump_site = DumpSite(self)
+
+        self.resource_nodes.append(depot)
+        self.resource_nodes.append(dump_site)
+
+        all_resources = []
+        rid = 0
+        for _ in range(SimulationConfig.NUM_TRUCKS):
+            all_resources.append(Resource(rid, ResourceType.TRUCK, self))
+            rid += 1
+        for _ in range(SimulationConfig.NUM_EXCAVATORS):
+            all_resources.append(Resource(rid, ResourceType.EXCAVATOR, self))
+            rid += 1
+        for _ in range(SimulationConfig.NUM_FIRE_TRUCKS):
+            all_resources.append(Resource(rid, ResourceType.FIRE_TRUCK, self))
+            rid += 1
+        for _ in range(SimulationConfig.NUM_AMBULANCES):
+            all_resources.append(Resource(rid, ResourceType.AMBULANCE, self))
+            rid += 1
+
+        for r in all_resources:
+            depot.transfer_resource(r)
 
     # ----------------------------------------------------------------------------
     # MARK: Results & Plotting helpers
@@ -246,6 +296,7 @@ class SimPySimulationEngine:
         res = {
             "sim_time": self.env.now,
             "non_idle_time": self.non_idle_time,
+            "tournament_decisions": self.tournament_decisions,
             "num_known_disasters": len(self.known_disasters),
             "time_points": self.time_points,
             "disaster_histories": self.disaster_histories,
@@ -264,6 +315,8 @@ class SimPySimulationEngine:
         return fig, axs
 
     def update_plot(self):
+        if self.fig is None or self.axs is None:
+            return
         ax_map, ax_dirt = self.axs
         ax_map.clear()
         ax_map.set_xlim(-120, 120)
@@ -330,49 +383,3 @@ class SimPySimulationEngine:
 
         plt.draw()
         plt.pause(0.001)
-
-    # ----------------------------------------------------------------------------
-    # MARK: Clone / Save / Load
-    # ----------------------------------------------------------------------------
-    def clone(self) -> "SimPySimulationEngine":
-        """
-        Attempt to create an exact copy of the engine using dill.
-        """
-        try:
-            # Use dill to deep-copy entire engine
-            cloned = dill.loads(dill.dumps(self))
-            return cloned
-        except Exception as e:
-            # Provide a helpful error and a fallback idea
-            raise RuntimeError("Cloning via dill failed. Original error: " + repr(e)) from e
-
-    def save(self, filepath: str):
-        """Persist engine to disk (best-effort using dill)."""
-        with open(filepath, "wb") as f:
-            dill.dump(self, f)
-
-    @staticmethod
-    def load(filepath: str) -> "SimPySimulationEngine":
-        with open(filepath, "rb") as f:
-            return dill.load(f)
-
-
-# # ---------------------------------------------------------------------
-# # Example adapter: replace your `run_simulation` function to use engine
-# # ---------------------------------------------------------------------
-# def example_run_with_engine(policy_name: str, policy_func: Callable, seed_value: int, live_plot=False):
-#     engine = SimPySimulationEngine(
-#         policy_func=policy_func,
-#         seed=seed_value,
-#         live_plot=live_plot,
-#         config={
-#             # optionally mirror SimulationConfig constants used
-#             "NUM_TRUCKS": SimulationConfig.NUM_TRUCKS,
-#             "NUM_EXCAVATORS": SimulationConfig.NUM_EXCAVATORS,
-#             "NUM_FIRE_TRUCKS": SimulationConfig.NUM_FIRE_TRUCKS,
-#             "NUM_AMBULANCES": SimulationConfig.NUM_AMBULANCES,
-#         },
-#     )
-#     # env/objects already created by constructor; if you disabled that, call engine._create_env_and_objects()
-#     success = engine.run(max_time=MAX_SIM_TIME)
-#     return success, engine.non_idle_time

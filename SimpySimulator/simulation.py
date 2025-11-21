@@ -1,6 +1,5 @@
 from __future__ import annotations
 import simpy
-import random
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from collections import defaultdict
@@ -151,7 +150,7 @@ class ResourceNode(ABC):
     def __init__(self, engine: SimPySimulationEngine, location: Tuple[float, float]):
         self.engine = engine
         self.env = engine.env
-        self.id = random.randint(1, 10000)
+        self.id = engine.rng.randint(1, 10000)
         self.location = location
 
         # Physical Inventory: Resources currently ON SITE and AVAILABLE
@@ -253,7 +252,7 @@ class Disaster(ResourceNode):
         self,
         engine: SimPySimulationEngine,
     ):
-        loc = (random.randint(-100, 100), random.randint(-100, 100))
+        loc = (engine.rng.randint(-100, 100), engine.rng.randint(-100, 100))
         super().__init__(engine, loc)
 
         self.active = True
@@ -331,7 +330,7 @@ class IdleResources(ResourceNode):
         get_events = {rt: self.inventory[rt].get() for rt in ResourceType}
         finished = yield self.env.any_of(list(get_events.values()))
 
-        winner_event = random.choice(list(finished.keys()))
+        winner_event = self.engine.rng.choice(list(finished.keys()))
         resource: Resource = winner_event.value
 
         for rt, event in get_events.items():

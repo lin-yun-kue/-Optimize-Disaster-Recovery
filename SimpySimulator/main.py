@@ -1,6 +1,5 @@
 from __future__ import annotations
 import simpy
-import random
 import statistics
 from typing import List, Dict, TypedDict, DefaultDict, TYPE_CHECKING
 import matplotlib.pyplot as plt
@@ -12,33 +11,6 @@ from argparse import ArgumentParser
 from collections import defaultdict
 from engine import SimPySimulationEngine
 from simulation import *
-
-
-# --- Main Execution Function ---
-def setup_simulation(engine: SimPySimulationEngine):
-    depot = Depot(engine)
-    dump_site = DumpSite(engine)
-
-    engine.resource_nodes.append(depot)
-    engine.resource_nodes.append(dump_site)
-
-    all_resources = []
-    rid = 0
-    for _ in range(SimulationConfig.NUM_TRUCKS):
-        all_resources.append(Resource(rid, ResourceType.TRUCK, engine))
-        rid += 1
-    for _ in range(SimulationConfig.NUM_EXCAVATORS):
-        all_resources.append(Resource(rid, ResourceType.EXCAVATOR, engine))
-        rid += 1
-    for _ in range(SimulationConfig.NUM_FIRE_TRUCKS):
-        all_resources.append(Resource(rid, ResourceType.FIRE_TRUCK, engine))
-        rid += 1
-    for _ in range(SimulationConfig.NUM_AMBULANCES):
-        all_resources.append(Resource(rid, ResourceType.AMBULANCE, engine))
-        rid += 1
-
-    for r in all_resources:
-        depot.transfer_resource(r)
 
 
 class PolicyResult(TypedDict):
@@ -71,17 +43,21 @@ if __name__ == "__main__":
             policy = [p for p in POLICIES if p.name == args.policy][0]
             # success, duration = run_simulation(policy, seed_value=seed, live_plot=args.live)
             engine = SimPySimulationEngine(policy=policy, seed=seed, live_plot=args.live)
-            setup_simulation(engine)
+            engine.initialize_world()
             success = engine.run()
             duration = engine.get_summary()["non_idle_time"]
             if success:
                 aggregated_results[args.policy]["success"].append(duration)
             else:
                 aggregated_results[args.policy]["fail"] += 1
+
+            print(f"Completed {args.policy} in {duration} seconds.")
         else:
             for policy in POLICIES:
+                if policy.name == "tournament":
+                    continue
                 engine = SimPySimulationEngine(policy=policy, seed=seed, live_plot=args.live)
-                setup_simulation(engine)
+                engine.initialize_world()
                 success = engine.run()
                 duration = engine.get_summary()["non_idle_time"]
 
@@ -89,6 +65,10 @@ if __name__ == "__main__":
                     aggregated_results[policy.name]["success"].append(duration)
                 else:
                     aggregated_results[policy.name]["fail"] += 1
+
+                print(f"Completed {policy.name} in {duration} seconds.")
+
+        print(f"\n--- END OF SEED {seed}  ---\n")
 
     print("\n" + "=" * 85)
     print(f"{'POLICY':<20} | {'SUCCESS %':<10} | {'AVG TIME':<10} | {'STDEV':<10} | {'MIN':<8} | {'MAX':<8}")

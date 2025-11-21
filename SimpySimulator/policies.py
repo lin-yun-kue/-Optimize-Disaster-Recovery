@@ -1,8 +1,16 @@
 import simpy
-import random
 from typing import List, Callable, TYPE_CHECKING
 import math
 from simulation import *
+from engine import SimPySimulationEngine
+import multiprocessing
+
+
+@dataclass
+class Policy:
+    name: str
+    func: Callable
+
 
 # ============================================================================
 # MARK: Utils
@@ -74,21 +82,19 @@ def get_partner_count(disaster: Disaster, resource: Resource) -> int:
 # ============================================================================
 
 
-def random_policy(resource: Resource, disasters: DisasterStore, env: simpy.Environment):
+def random_policy(resource: Resource, disasters: List[Disaster], env: simpy.Environment) -> Disaster:
     """
     Randomly assigns a resource to any available disaster.
     """
 
-    valid_targets = [d for d in disasters.items if is_useful(resource, d)]
+    valid_targets = [d for d in disasters if is_useful(resource, d)]
 
     if not valid_targets:
         # TODO: This should just return / do nothing, but also needs to return the resource to the idle list, and also not cause and infinite loop where no time advances
-        valid_targets = disasters.items
+        valid_targets = disasters
 
-    target = random.choice(valid_targets)
-    disaster: Disaster = yield disasters.get(filter=lambda x: x == target)
-    disasters.put(disaster)
-    disaster.transfer_resource(resource)
+    target = resource.engine.decision_rng.choice(valid_targets)
+    return target
 
 
 # ============================================================================
@@ -96,7 +102,7 @@ def random_policy(resource: Resource, disasters: DisasterStore, env: simpy.Envir
 # ============================================================================
 
 
-def first_priority_policy(resource: Resource, disasters: DisasterStore, env: simpy.Environment):
+def first_priority_policy(resource: Resource, disasters: List[Disaster], env: simpy.Environment) -> Disaster:
     """
     Prioritizes the disaster with the MOST total resources currently assigned.
     """
@@ -105,14 +111,11 @@ def first_priority_policy(resource: Resource, disasters: DisasterStore, env: sim
     def get_total_resources(ls: Disaster):
         return sum(len(roster_set) for roster_set in ls.roster.values())
 
-    sorted_disasters = sorted(disasters.items, key=get_total_resources)
+    sorted_disasters = sorted(disasters, key=get_total_resources)
 
     # Pick the one with the most resources, sorted Ascending, last in list
     target = sorted_disasters[-1]
-    disaster: Landslide = yield disasters.get(filter=lambda x: x == target)
-
-    disasters.put(disaster)
-    disaster.transfer_resource(resource)
+    return target
 
 
 # ============================================================================
@@ -120,15 +123,15 @@ def first_priority_policy(resource: Resource, disasters: DisasterStore, env: sim
 # ============================================================================
 
 
-def split_excavator_policy(resource: Resource, disasters: DisasterStore, env: simpy.Environment):
+def split_excavator_policy(resource: Resource, disasters: List[Disaster], env: simpy.Environment) -> Disaster:
     """
     Evenly splits Excavators.
     Splits Trucks based on where Excavators are located.
     """
 
-    candidates = [d for d in disasters.items if is_useful(resource, d)]
+    candidates = [d for d in disasters if is_useful(resource, d)]
     if not candidates:
-        candidates = disasters.items
+        candidates = disasters
 
     rt = resource.resource_type
     target = None
@@ -144,9 +147,7 @@ def split_excavator_policy(resource: Resource, disasters: DisasterStore, env: si
         # Tie-breaker: Fewest of my own type (load balancing)
         target = max(candidates, key=lambda x: (get_partner_count(x, resource), -len(x.roster[rt])))
 
-    disaster = yield disasters.get(filter=lambda x: x == target)
-    disasters.put(disaster)
-    disaster.transfer_resource(resource)
+    return target
 
 
 # ============================================================================
@@ -154,21 +155,19 @@ def split_excavator_policy(resource: Resource, disasters: DisasterStore, env: si
 # ============================================================================
 
 
-def closest_neighbor_policy(resource: Resource, disasters: DisasterStore, env: simpy.Environment):
+def closest_neighbor_policy(resource: Resource, disasters: List[Disaster], env: simpy.Environment) -> Disaster:
     """
     Minimizes travel time.
     Trucks only go to the nearest site that actually has an Excavator.
     """
 
-    candidates = [d for d in disasters.items if is_useful(resource, d)]
+    candidates = [d for d in disasters if is_useful(resource, d)]
     if not candidates:
-        candidates = disasters.items
+        candidates = disasters
 
     target = min(candidates, key=lambda d: get_dist(resource, d))
 
-    disaster = yield disasters.get(filter=lambda x: x == target)
-    disasters.put(disaster)
-    disaster.transfer_resource(resource)
+    return target
 
 
 # ============================================================================
@@ -176,22 +175,20 @@ def closest_neighbor_policy(resource: Resource, disasters: DisasterStore, env: s
 # ============================================================================
 
 
-def smallest_job_first_policy(resource: Resource, disasters: DisasterStore, env: simpy.Environment):
+def smallest_job_first_policy(resource: Resource, disasters: List[Disaster], env: simpy.Environment) -> Disaster:
     """
     Prioritizes the landslide with the least amount of dirt remaining.
     Clears disasters off the map one by one.
     """
     # Sort by current dirt level (ascending)
-    candidates = [d for d in disasters.items if is_useful(resource, d)]
+    candidates = [d for d in disasters if is_useful(resource, d)]
     if not candidates:
-        candidates = disasters.items
+        candidates = disasters
 
     # Sort by severity (ascending)
     target = min(candidates, key=get_severity)
 
-    disaster = yield disasters.get(filter=lambda x: x == target)
-    disasters.put(disaster)
-    disaster.transfer_resource(resource)
+    return target
 
 
 # ============================================================================
@@ -199,14 +196,14 @@ def smallest_job_first_policy(resource: Resource, disasters: DisasterStore, env:
 # ============================================================================
 
 
-def balanced_ratio_policy(resource: Resource, disasters: DisasterStore, env: simpy.Environment):
+def balanced_ratio_policy(resource: Resource, disasters: List[Disaster], env: simpy.Environment) -> Disaster:
     """
     Attempts to maintain an ideal Truck-to-Excavator ratio to minimize queuing.
     """
 
-    candidates = [d for d in disasters.items if is_useful(resource, d)]
+    candidates = [d for d in disasters if is_useful(resource, d)]
     if not candidates:
-        candidates = disasters.items
+        candidates = disasters
 
     rt = resource.resource_type
 
@@ -239,9 +236,7 @@ def balanced_ratio_policy(resource: Resource, disasters: DisasterStore, env: sim
 
     target = min(candidates, key=get_ratio_score)
 
-    disaster = yield disasters.get(filter=lambda x: x == target)
-    disasters.put(disaster)
-    disaster.transfer_resource(resource)
+    return target
 
 
 # ============================================================================
@@ -249,16 +244,16 @@ def balanced_ratio_policy(resource: Resource, disasters: DisasterStore, env: sim
 # ============================================================================
 
 
-def smart_split_policy(resource: Resource, disasters: DisasterStore, env: simpy.Environment):
+def smart_split_policy(resource: Resource, disasters: List[Disaster], env: simpy.Environment) -> Disaster:
     """
     - Heavy units split evenly.
     - Support units go where partners are.
     - CRITICAL: Do not send resources if the inbound fleet is already sufficient to clear the job.
     """
 
-    candidates = [d for d in disasters.items if is_useful(resource, d)]
+    candidates = [d for d in disasters if is_useful(resource, d)]
     if not candidates:
-        candidates = disasters.items
+        candidates = disasters
 
     rt = resource.resource_type
 
@@ -297,9 +292,7 @@ def smart_split_policy(resource: Resource, disasters: DisasterStore, env: simpy.
         # Support units go to viable site with fewest of my type
         target = min(viable_sites, key=lambda x: len(x.roster[rt]))
 
-    disaster = yield disasters.get(filter=lambda x: x == target)
-    disasters.put(disaster)
-    disaster.transfer_resource(resource)
+    return target
 
 
 # ============================================================================
@@ -307,13 +300,13 @@ def smart_split_policy(resource: Resource, disasters: DisasterStore, env: simpy.
 # ============================================================================
 
 
-def cost_function_policy(resource: Resource, disasters: DisasterStore, env: simpy.Environment):
+def cost_function_policy(resource: Resource, disasters: List[Disaster], env: simpy.Environment) -> Disaster:
     """
     Calculates Cost: Distance + Queue + Completion Penalty.
     """
-    candidates = [d for d in disasters.items if is_useful(resource, d)]
+    candidates = [d for d in disasters if is_useful(resource, d)]
     if not candidates:
-        candidates = disasters.items
+        candidates = disasters
 
     def calculate_score(d):
         # 1. Drive Time
@@ -336,9 +329,7 @@ def cost_function_policy(resource: Resource, disasters: DisasterStore, env: simp
 
     target = min(candidates, key=calculate_score)
 
-    disaster = yield disasters.get(filter=lambda x: x == target)
-    disasters.put(disaster)
-    disaster.transfer_resource(resource)
+    return target
 
 
 # ============================================================================
@@ -346,14 +337,14 @@ def cost_function_policy(resource: Resource, disasters: DisasterStore, env: simp
 # ============================================================================
 
 
-def gravity_policy(resource: Resource, disasters: DisasterStore, env: simpy.Environment):
+def gravity_policy(resource: Resource, disasters: List[Disaster], env: simpy.Environment) -> Disaster:
     """
     High Pull = High Severity + High Priority.
     Low Pull = High Distance + High Queue.
     """
-    candidates = [d for d in disasters.items if is_useful(resource, d)]
+    candidates = [d for d in disasters if is_useful(resource, d)]
     if not candidates:
-        candidates = disasters.items
+        candidates = disasters
 
     def get_score(d):
         # Numerator: Urgency
@@ -376,9 +367,7 @@ def gravity_policy(resource: Resource, disasters: DisasterStore, env: simpy.Envi
 
     target = max(candidates, key=get_score)
 
-    disaster = yield disasters.get(filter=lambda x: x == target)
-    disasters.put(disaster)
-    disaster.transfer_resource(resource)
+    return target
 
 
 # ============================================================================
@@ -386,14 +375,14 @@ def gravity_policy(resource: Resource, disasters: DisasterStore, env: simpy.Envi
 # ============================================================================
 
 
-def chain_gang_policy(resource: Resource, disasters: DisasterStore, env: simpy.Environment):
+def chain_gang_policy(resource: Resource, disasters: List[Disaster], env: simpy.Environment) -> Disaster:
     """
     Anchors (Exc/Fire) -> Largest Jobs.
     Runners (Truck/Amb) -> Closest Active Anchor.
     """
-    candidates = [d for d in disasters.items if is_useful(resource, d)]
+    candidates = [d for d in disasters if is_useful(resource, d)]
     if not candidates:
-        candidates = disasters.items
+        candidates = disasters
 
     rt = resource.resource_type
     target = None
@@ -413,20 +402,85 @@ def chain_gang_policy(resource: Resource, disasters: DisasterStore, env: simpy.E
             # No active sites? Go to biggest job to wait for anchors
             target = max(candidates, key=get_severity)
 
-    disaster = yield disasters.get(filter=lambda x: x == target)
-    disasters.put(disaster)
-    disaster.transfer_resource(resource)
+    return target
+
+
+# ============================================================================
+# MARK: Tournament Policy
+# ============================================================================
+
+
+def evaluate_policy_worker(policy: Policy, seed: int, history: List[int]) -> dict:
+    # Test every policy
+    try:
+        # 1. Create Fresh Engine
+        sim_fork = SimPySimulationEngine(policy, seed, live_plot=False)
+        sim_fork.initialize_world()  # Populate world exactly as master was populated
+
+        # 2. Load History for Replay
+        sim_fork.replay_buffer = list(history)
+
+        # 3. Run to completion
+        # The loop will consume replay_buffer, then capture the NEXT decision in sim_fork.branch_decision
+        success = sim_fork.run()
+
+        time_taken = sim_fork.get_summary()["non_idle_time"]
+
+        return {
+            "success": success,
+            "time": time_taken,
+            "policy": policy.name,
+            "move_id": sim_fork.branch_decision,
+        }
+    except Exception as e:
+        print(f"Exception: {e}")
+        raise e
+
+
+def tournament_policy_func(resource: Resource, disasters: List[Disaster], env: simpy.Environment) -> Disaster:
+    """
+    The Meta-Policy (Replay Version).
+    1. Instantiate N new simulation engines (one per candidate policy).
+    2. Feed them the `decision_log` from the Master simulation.
+    3. Run them. They will fast-forward replay history, then switch to candidate policy.
+    4. Compare completion times.
+    5. Extract the specific move the winner made at the branching point.
+    """
+    master_engine = resource.engine
+
+    # Get current history from Master
+    current_history = list(master_engine.decision_log)
+    master_seed = master_engine.seed
+
+    candidates = [p for p in POLICIES if p.name != "tournament"]
+
+    tasks = [(p, master_seed, current_history) for p in candidates]
+
+    with multiprocessing.Pool(processes=len(candidates)) as pool:
+        results = pool.starmap(evaluate_policy_worker, tasks)
+
+    best_result = None
+    min_time = float("inf")
+
+    for result in results:
+        if result["success"] and result["time"] < min_time:
+            min_time = result["time"]
+            best_result = result
+
+    if best_result is None:
+        raise Exception("No policy was able to complete the simulation.")
+
+    # Record winner
+    master_engine.tournament_decisions.append((env.now, best_result["policy"]))
+
+    # Find the disaster object in the Master's store that matches the ID
+    target = [d for d in disasters if d.id == best_result["move_id"]][0]
+    return target
 
 
 # ============================================================================
 # MARK: Policy Map
 # ============================================================================
-
-
-@dataclass
-class Policy:
-    name: str
-    func: Callable
 
 
 POLICIES: List[Policy] = [
@@ -440,4 +494,5 @@ POLICIES: List[Policy] = [
     Policy("cost_function", cost_function_policy),
     Policy("gravity", gravity_policy),
     Policy("chain_gang", chain_gang_policy),
+    Policy("tournament", tournament_policy_func),
 ]

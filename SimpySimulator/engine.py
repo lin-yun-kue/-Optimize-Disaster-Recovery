@@ -1,29 +1,18 @@
 from __future__ import annotations
+from simpy.events import Process
 import simpy
 import random
-import statistics
-from typing import List, Dict, TypedDict, DefaultDict
+from typing import Final, Never, TypeVar, TYPE_CHECKING
+from collections.abc import Generator
 import matplotlib.pyplot as plt
 from matplotlib.axes import Axes
 from matplotlib.figure import Figure
-from math import pi as PI, cos, sin
+from math import cos, sin
 from simpy.core import EmptySchedule
-from argparse import ArgumentParser
-from collections import defaultdict
-import simpy
-import random
-import copy
-import dill
-import statistics
-from typing import Any, Callable, Dict, List, Optional, Tuple, TYPE_CHECKING
-import matplotlib.pyplot as plt
-from matplotlib.axes import Axes
-from matplotlib.figure import Figure
-from dataclasses import dataclass, field
-from simulation import *
+from .simulation import *
 
 if TYPE_CHECKING:
-    from policies import Policy
+    from .policies import Policy
 
 
 # ============================================================================
@@ -31,8 +20,14 @@ if TYPE_CHECKING:
 # ============================================================================
 
 
+T = TypeVar("T")
+
+
 class SimulationRNG:
     """Custom RNG that can be cloned with exact state preservation (wraps random.Random)."""
+
+    seed: int
+    _rng: random.Random
 
     def __init__(self, seed: int = 0):
         self.seed = seed
@@ -47,10 +42,13 @@ class SimulationRNG:
     def uniform(self, a: float, b: float) -> float:
         return self._rng.uniform(a, b)
 
-    def choice(self, seq):
+    def choice(self, seq: list[T]) -> T:
         return self._rng.choice(seq)
 
-    def setstate(self, state):
+    def shuffle(self, seq: list[T]) -> None:
+        self._rng.shuffle(seq)
+
+    def setstate(self, state: tuple[int, int, int, int, int, int]):
         self._rng.setstate(state)
 
     def getstate(self):
@@ -74,7 +72,7 @@ class SimPySimulationEngine:
     Simulation engine wrapper for your disaster-resource SimPy simulation.
     """
 
-    MAX_SIM_TIME = 20_000
+    MAX_SIM_TIME: int = 20_000
 
     def __init__(
         self,
@@ -82,37 +80,37 @@ class SimPySimulationEngine:
         seed: int = 0,
         live_plot: bool = False,
     ):
-        self.policy = policy
-        self.seed = seed
-        self.rng = SimulationRNG(seed)
-        self.decision_rng = SimulationRNG(seed + 99999)
-        self.live_plot = live_plot
+        self.policy: Policy = policy
+        self.seed: int = seed
+        self.rng: SimulationRNG = SimulationRNG(seed)
+        self.decision_rng: SimulationRNG = SimulationRNG(seed + 99999)
+        self.live_plot: bool = live_plot
 
         # SimPy environment and domain objects
         self.env: simpy.Environment = simpy.Environment()
-        self.idle_resources = IdleResources(self)
-        self.disaster_store = DisasterStore(self.env)
+        self.idle_resources: IdleResources = IdleResources(self)
+        self.disaster_store: DisasterStore = DisasterStore(self.env)
         # self.resources: List[Resource] = []
-        self.resource_nodes: List[ResourceNode] = []
+        self.resource_nodes: list[ResourceNode] = []
 
         # result tracking
-        self.time_points: List[float] = []
-        self.known_disasters: Dict[int, Any] = {}
-        self.disaster_histories: Dict[int, List[float]] = {}
-        self.non_idle_time = 0.0
-        self.tournament_decisions: List[Tuple[float, str]] = []
+        self._time_points: list[float] = []
+        self._known_disasters: dict[int, Disaster] = {}
+        self._disaster_histories: dict[int, list[float]] = {}
+        self.non_idle_time: float = 0.0
+        self._tournament_decisions: list[tuple[float, str]] = []
 
         # replay
-        self.decision_log: List[int] = []
-        self.replay_buffer: List[int] = []
-        self.branch_decision: Optional[int] = None
+        self.decision_log: list[int] = []
+        self.replay_buffer: list[int] = []
+        self.branch_decision: int | None = None
 
         # whether the scheduled "add_disasters" is present and its process reference
-        self._disasters_process: Optional[simpy.Process] = None
-        self._main_loop_process: Optional[simpy.Process] = None
+        self.disasters_process: simpy.Process | None = None
+        self._main_loop_process: simpy.Process | None = None
 
-        self.fig = None
-        self.axs = None
+        self.fig: Figure | None = None
+        self.axs: list[Axes] | None = None
 
         print(f"Running {self.policy.name} with seed {self.seed}.")
 
@@ -126,7 +124,7 @@ class SimPySimulationEngine:
         if self.live_plot and self.fig is None:
             self.fig, self.axs = self.setup_plot()
 
-        self._disasters_process = self.env.process(self.add_disasters())
+        self.disasters_process = self.env.process(self.add_disasters())
         self._main_loop_process = self.env.process(self.loop())
 
         simulation_succeeded = False
@@ -140,11 +138,7 @@ class SimPySimulationEngine:
             except EmptySchedule:
                 # CASE 1: The schedule is empty.
                 # Did we finish?
-                if (
-                    self._disasters_process
-                    and self._disasters_process.triggered
-                    and len(self.disaster_store.items) == 0
-                ):
+                if self.disasters_process and self.disasters_process.triggered and len(self.disaster_store.items) == 0:
                     simulation_succeeded = True
                 else:
                     # We ran out of events but disasters remain -> FAILURE
@@ -170,24 +164,23 @@ class SimPySimulationEngine:
 
             # detect new disasters
             for ls in list(self.disaster_store.items):
-                if ls.id not in self.known_disasters:
-                    self.known_disasters[ls.id] = ls
-                    self.disaster_histories[ls.id] = [0] * len(self.time_points)
+                if ls.id not in self._known_disasters:
+                    self._known_disasters[ls.id] = ls
+                    self._disaster_histories[ls.id] = [0] * len(self._time_points)
 
-            self.time_points.append(self.env.now)
-            for ls_id, ls_obj in self.known_disasters.items():
-                val = ls_obj.dirt.level if ls_obj in self.disaster_store.items else 0
-                self.disaster_histories[ls_id].append(val)
+            self._time_points.append(self.env.now)
+            for ls_id, ls_obj in self._known_disasters.items():
+                if isinstance(ls_obj, Landslide):
+                    val = ls_obj.dirt.level
+                else:
+                    val = 0
+                self._disaster_histories[ls_id].append(val)
 
             if self.live_plot and self.axs is not None:
                 self.update_plot()
 
             # success condition
-            if (
-                self._disasters_process is not None
-                and self._disasters_process.triggered
-                and len(self.disaster_store.items) == 0
-            ):
+            if self.disasters_process.triggered and len(self.disaster_store.items) == 0:
                 simulation_succeeded = True
                 break
 
@@ -197,10 +190,20 @@ class SimPySimulationEngine:
         return simulation_succeeded
 
     # ----------------------------------------------------------------------------
+    # MARK: Run in Gym Environment
+    # ----------------------------------------------------------------------------
+
+    def run_in_gym(self, gym_loop: Callable[[], Generator[simpy.Event, Resource, Never]]):
+        """Run the simulation in a Gym environment."""
+
+        self.disasters_process = self.env.process(self.add_disasters())
+        self._main_loop_process = self.env.process(gym_loop())
+
+    # ----------------------------------------------------------------------------
     # MARK: Simulation Processes
     # ----------------------------------------------------------------------------
 
-    def loop(self):
+    def loop(self) -> Generator[Process, Resource, Never]:
         """
         The main orchestrator. It waits for ANY resource to become available
         at the depot, then asks the policy where to send it.
@@ -236,6 +239,13 @@ class SimPySimulationEngine:
             target_disaster.transfer_resource(resource)
 
     # ----------------------------------------------------------------------------
+    # MARK: Decision Loop
+    # ----------------------------------------------------------------------------
+
+    def get_distance(self, r1: Resource, r2: ResourceNode) -> float:
+        return math.hypot(r1.location[0] - r2.location[0], r1.location[1] - r2.location[1])
+
+    # ----------------------------------------------------------------------------
     # MARK: Disaster Generator
     # ----------------------------------------------------------------------------
 
@@ -258,7 +268,7 @@ class SimPySimulationEngine:
             landslide = Landslide(self, landslide_size, dump_site)
             self.disaster_store.put(landslide)
 
-            delay = self.rng.randint(100, 500)
+            delay = self.rng.randint(0, 20)
             if i < SimulationConfig.NUM_LANDSLIDES - 1:
                 yield self.env.timeout(delay)
 
@@ -270,7 +280,7 @@ class SimPySimulationEngine:
         self.resource_nodes.append(depot)
         self.resource_nodes.append(dump_site)
 
-        all_resources = []
+        all_resources: list[Resource] = []
         rid = 0
         for _ in range(SimulationConfig.NUM_TRUCKS):
             all_resources.append(Resource(rid, ResourceType.TRUCK, self))
@@ -278,12 +288,12 @@ class SimPySimulationEngine:
         for _ in range(SimulationConfig.NUM_EXCAVATORS):
             all_resources.append(Resource(rid, ResourceType.EXCAVATOR, self))
             rid += 1
-        for _ in range(SimulationConfig.NUM_FIRE_TRUCKS):
-            all_resources.append(Resource(rid, ResourceType.FIRE_TRUCK, self))
-            rid += 1
-        for _ in range(SimulationConfig.NUM_AMBULANCES):
-            all_resources.append(Resource(rid, ResourceType.AMBULANCE, self))
-            rid += 1
+        # for _ in range(SimulationConfig.NUM_FIRE_TRUCKS):
+        #     all_resources.append(Resource(rid, ResourceType.FIRE_TRUCK, self))
+        #     rid += 1
+        # for _ in range(SimulationConfig.NUM_AMBULANCES):
+        #     all_resources.append(Resource(rid, ResourceType.AMBULANCE, self))
+        #     rid += 1
 
         for r in all_resources:
             depot.transfer_resource(r)
@@ -291,19 +301,22 @@ class SimPySimulationEngine:
     # ----------------------------------------------------------------------------
     # MARK: Results & Plotting helpers
     # ----------------------------------------------------------------------------
-    def get_summary(self) -> Dict[str, Any]:
+    def get_summary(self) -> dict[str, float]:
         """Return a summary dictionary of results similar to old engine get_results()."""
-        res = {
-            "sim_time": self.env.now,
+        # res = {
+        #     "sim_time": self.env.now,
+        #     "non_idle_time": self.non_idle_time,
+        #     "tournament_decisions": self.tournament_decisions,
+        #     "num_known_disasters": len(self.known_disasters),
+        #     "time_points": self.time_points,
+        #     "disaster_histories": self.disaster_histories,
+        # }
+        # return res
+        return {
             "non_idle_time": self.non_idle_time,
-            "tournament_decisions": self.tournament_decisions,
-            "num_known_disasters": len(self.known_disasters),
-            "time_points": self.time_points,
-            "disaster_histories": self.disaster_histories,
         }
-        return res
 
-    def setup_plot(self) -> Tuple[Figure, List[Axes]]:
+    def setup_plot(self) -> tuple[Figure, list[Axes]]:
         fig, axs = plt.subplots(2, 1, figsize=(10, 12), gridspec_kw={"height_ratios": [3, 1]})
         axs[0].set_xlim(-120, 120)
         axs[0].set_ylim(-120, 120)
@@ -374,11 +387,11 @@ class SimPySimulationEngine:
                     ax_map.text(loc[0] + 2, loc[1] + 2, f"{r.id}", color=color, fontsize=8)
 
         ax_dirt.clear()
-        if self.disaster_histories and len(self.time_points) > 0:
-            ids = sorted(self.disaster_histories.keys())
-            y_data = [self.disaster_histories[i] for i in ids]
+        if self._disaster_histories and len(self._time_points) > 0:
+            ids = sorted(self._disaster_histories.keys())
+            y_data = [self._disaster_histories[i] for i in ids]
             labels = [f"L{i}" for i in ids]
-            ax_dirt.stackplot(self.time_points, *y_data, labels=labels, alpha=0.8, step="post")
+            ax_dirt.stackplot(self._time_points, *y_data, labels=labels, alpha=0.8, step="post")
             ax_dirt.legend(loc="upper left", fontsize="small", framealpha=0.5)
 
         plt.draw()

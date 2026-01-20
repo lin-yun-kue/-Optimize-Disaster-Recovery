@@ -1,11 +1,10 @@
 import numpy as np
-from SimPyTest import DisasterResponseEnv  # Assumes your env is in this filename
+from SimPyTest import DisasterResponseEnv, ScenarioConfig
 
 
 def run_test():
-    # 1. Initialize the environment
-    # Using "human" render mode will pop up the Matplotlib window from your engine
-    env = DisasterResponseEnv(8, "random")
+    config = ScenarioConfig(num_trucks=(20, 40), num_landslides=5)
+    env = DisasterResponseEnv(8, "nearest", scenario_config=config)
 
     print("--- Starting Test: Random Agent with Action Masking ---")
     obs, info = env.reset(seed=42)

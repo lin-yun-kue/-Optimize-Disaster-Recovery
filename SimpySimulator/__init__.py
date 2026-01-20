@@ -19,4 +19,5 @@ __all__ = [
     "Depot",
     "DumpSite",
     "DisasterStore",
+    "ScenarioConfig",
 ]

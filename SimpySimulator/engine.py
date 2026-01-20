@@ -64,6 +64,20 @@ class SimulationRNG:
         return new
 
 
+@dataclass
+class ScenarioConfig:
+    # Resource counts (can be a range for randomization)
+    num_trucks: int | tuple[int, int] = 50
+    num_excavators: int | tuple[int, int] = 10
+
+    # Disaster counts
+    num_landslides: int | tuple[int, int] = (10, 15)
+    landslide_size_range: tuple[int, int] = (150, 250)
+
+    # Optional callback for manual placement: (engine) -> None
+    custom_setup_fn: Callable[[SimPySimulationEngine], None] | None = None
+
+
 # ============================================================================
 # MARK: Engine
 # ============================================================================
@@ -79,12 +93,18 @@ class SimPySimulationEngine:
         policy: Policy,
         seed: int = 0,
         live_plot: bool = False,
+        scenario_config: ScenarioConfig | None = None,
     ):
         self.policy: Policy = policy
         self.seed: int = seed
         self.rng: SimulationRNG = SimulationRNG(seed)
         self.decision_rng: SimulationRNG = SimulationRNG(seed + 99999)
         self.live_plot: bool = live_plot
+
+        if scenario_config is None:
+            self.scenario_config: ScenarioConfig = ScenarioConfig()
+        else:
+            self.scenario_config = scenario_config
 
         # SimPy environment and domain objects
         self.env: simpy.Environment = simpy.Environment()
@@ -250,53 +270,47 @@ class SimPySimulationEngine:
     # ----------------------------------------------------------------------------
 
     def add_disasters(self):
-        min_size = SimulationConfig.LANDSLIDE_MIN_SIZE
-        max_size = SimulationConfig.LANDSLIDE_MAX_SIZE
-
-        initial_delay = self.rng.randint(10, 20)
-        yield self.env.timeout(initial_delay)
-
         dump_site = [d for d in self.resource_nodes if isinstance(d, DumpSite)][0]
 
-        for i in range(SimulationConfig.NUM_STARTING_LANDSLIDES):
-            landslide_size = self.rng.randint(min_size, max_size)
-            landslide = Landslide(self, landslide_size, dump_site)
+        def get_count(val: int | tuple[int, int]) -> int:
+            return self.rng.randint(val[0], val[1]) if isinstance(val, tuple) else val
+
+        num_to_spawn = get_count(self.scenario_config.num_landslides)
+        low, high = self.scenario_config.landslide_size_range
+
+        for _ in range(num_to_spawn):
+            landslide = Landslide(self, self.rng.randint(low, high), dump_site)
             self.disaster_store.put(landslide)
 
-        for i in range(SimulationConfig.NUM_LANDSLIDES):
-            landslide_size = self.rng.randint(min_size, max_size)
-            landslide = Landslide(self, landslide_size, dump_site)
-            self.disaster_store.put(landslide)
-
-            delay = self.rng.randint(0, 20)
-            if i < SimulationConfig.NUM_LANDSLIDES - 1:
-                yield self.env.timeout(delay)
+            # Optional: Add a small delay between spawns
+            yield self.env.timeout(self.rng.uniform(0, 10))
 
     def initialize_world(self):
         """Initialize the world with a randomized set of resources."""
-        depot = Depot(self)
-        dump_site = DumpSite(self)
 
-        self.resource_nodes.append(depot)
-        self.resource_nodes.append(dump_site)
+        if self.scenario_config.custom_setup_fn:
+            self.scenario_config.custom_setup_fn(self)
+        else:
+            depot = Depot(self)
+            dump_site = DumpSite(self)
 
-        all_resources: list[Resource] = []
-        rid = 0
-        for _ in range(SimulationConfig.NUM_TRUCKS):
-            all_resources.append(Resource(rid, ResourceType.TRUCK, self))
-            rid += 1
-        for _ in range(SimulationConfig.NUM_EXCAVATORS):
-            all_resources.append(Resource(rid, ResourceType.EXCAVATOR, self))
-            rid += 1
-        # for _ in range(SimulationConfig.NUM_FIRE_TRUCKS):
-        #     all_resources.append(Resource(rid, ResourceType.FIRE_TRUCK, self))
-        #     rid += 1
-        # for _ in range(SimulationConfig.NUM_AMBULANCES):
-        #     all_resources.append(Resource(rid, ResourceType.AMBULANCE, self))
-        #     rid += 1
+            self.resource_nodes.append(depot)
+            self.resource_nodes.append(dump_site)
 
-        for r in all_resources:
-            depot.transfer_resource(r)
+            def get_count(val: int | tuple[int, int]) -> int:
+                return self.rng.randint(val[0], val[1]) if isinstance(val, tuple) else val
+
+            spawn_plan = [
+                (ResourceType.TRUCK, get_count(self.scenario_config.num_trucks)),
+                (ResourceType.EXCAVATOR, get_count(self.scenario_config.num_excavators)),
+            ]
+
+            rid = 0
+            for r_type, count in spawn_plan:
+                for _ in range(count):
+                    r = Resource(rid, r_type, self)
+                    depot.transfer_resource(r)
+                    rid += 1
 
     # ----------------------------------------------------------------------------
     # MARK: Results & Plotting helpers

@@ -11,7 +11,7 @@ import gymnasium as gym
 import numpy as np
 import numpy.typing as npt
 from gymnasium import spaces
-from .engine import SimPySimulationEngine
+from .engine import ScenarioConfig, SimPySimulationEngine
 from .policies import Policy, is_useful
 
 
@@ -41,8 +41,11 @@ class DisasterResponseEnv(gym.Env[ObsType, ActType]):
     sorting_strategy: The sorting strategy to use when multiple disasters are visible.
     """
 
-    def __init__(self, max_visible_disasters: int, sorting_strategy: SortOptions):
+    def __init__(
+        self, max_visible_disasters: int, sorting_strategy: SortOptions, scenario_config: ScenarioConfig | None = None
+    ):
         super().__init__()
+        self.scenario_config: ScenarioConfig = scenario_config or ScenarioConfig()
         self.max_slots: int = max_visible_disasters
         self.sorting_strategy: str = sorting_strategy
 
@@ -157,7 +160,11 @@ class DisasterResponseEnv(gym.Env[ObsType, ActType]):
 
         gym_policy = Policy("gym_driver", lambda r, ds, env: ds[0])
 
-        self.engine = SimPySimulationEngine(policy=gym_policy, seed=seed if seed is not None else 0)
+        self.engine = SimPySimulationEngine(
+            policy=gym_policy,
+            seed=seed if seed is not None else 0,
+            scenario_config=self.scenario_config,
+        )
         self.engine.initialize_world()
 
         self.current_resource = None

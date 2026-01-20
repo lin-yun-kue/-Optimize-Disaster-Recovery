@@ -68,20 +68,20 @@ class ResourceType(Enum):
 class SimulationConfig:
     DROP_OFF_LOCATION = (75, 75)
     DEPOT_LOCATION = (0, 0)
-    HOSPITAL_LOCATION = (-75, -75)
+    # HOSPITAL_LOCATION = (-75, -75)
 
     # Ticks should be in minutes
 
     # Disaster Specifics
-    LANDSLIDE_MIN_SIZE = 150
-    LANDSLIDE_MAX_SIZE = 250
-    NUM_STARTING_LANDSLIDES = 10
-    NUM_LANDSLIDES = 15
+    # LANDSLIDE_MIN_SIZE = 150
+    # LANDSLIDE_MAX_SIZE = 250
+    # NUM_STARTING_LANDSLIDES = 10
+    # NUM_LANDSLIDES = 15
 
-    NUM_TRUCKS = 50
-    NUM_EXCAVATORS = 10
-    NUM_FIRE_TRUCKS = 4
-    NUM_AMBULANCES = 5
+    # NUM_TRUCKS = 50
+    # NUM_EXCAVATORS = 10
+    # NUM_FIRE_TRUCKS = 4
+    # NUM_AMBULANCES = 5
 
 
 # ============================================================================

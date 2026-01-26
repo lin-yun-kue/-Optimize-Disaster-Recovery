@@ -1,14 +1,21 @@
 from __future__ import annotations
-import simpy
+
+import math
+from abc import ABC, abstractmethod
+from collections import defaultdict
+from collections.abc import Generator
 from dataclasses import dataclass, field
 from enum import Enum, auto
-from collections import defaultdict
-from typing import Dict, Set, List, Optional, Tuple, Any, TypedDict, TYPE_CHECKING
-from abc import ABC, abstractmethod
-import math
+from typing import TYPE_CHECKING, Callable, Never, TypedDict, final
+
+import simpy
+from simpy.events import AllOf, AnyOf, Process, Timeout
+from simpy.resources.container import ContainerGet
+from simpy.resources.store import FilterStoreGet, StorePut
+from typing_extensions import override
 
 if TYPE_CHECKING:
-    from engine import SimPySimulationEngine
+    from .engine import SimPySimulationEngine
 
 # ============================================================================
 # MARK: Configuration & Enums
@@ -33,45 +40,48 @@ class ResourceType(Enum):
         {"speed": 1.0, "work_rate": 10},
         ResourceRender({"marker": "P", "color": "orange"}),
     )
-    FIRE_TRUCK = (
-        auto(),
-        {"speed": 3.0, "work_rate": 5},
-        ResourceRender({"marker": "p", "color": "red"}),
-    )
-    AMBULANCE = (
-        auto(),
-        {"speed": 4.0, "capacity": 1, "load_time": 5},
-        ResourceRender({"marker": "X", "color": "skyblue"}),
-    )
+    # FIRE_TRUCK = (
+    #     auto(),
+    #     {"speed": 3.0, "work_rate": 5},
+    #     ResourceRender({"marker": "p", "color": "red"}),
+    # )
+    # AMBULANCE = (
+    #     auto(),
+    #     {"speed": 4.0, "capacity": 1, "load_time": 5},
+    #     ResourceRender({"marker": "X", "color": "skyblue"}),
+    # )
 
-    specs: Dict[str, float]
-    render: ResourceRender
+    def __init__(self, value: int, specs: dict[str, float], render: ResourceRender):
+        self._value_ = value
+        # self.value: int = value
+        self.specs = specs
+        self.render = render
 
-    def __new__(cls, value: int, specs: Dict[str, float], render: ResourceRender):
-        obj = object.__new__(cls)
-        obj._value_ = value
-        obj.specs = specs
-        obj.render = render
-        return obj
+    if TYPE_CHECKING:
+
+        @property
+        @override
+        def value(self) -> int: ...
 
 
+@final
 class SimulationConfig:
     DROP_OFF_LOCATION = (75, 75)
     DEPOT_LOCATION = (0, 0)
-    HOSPITAL_LOCATION = (-75, -75)
+    # HOSPITAL_LOCATION = (-75, -75)
 
     # Ticks should be in minutes
 
     # Disaster Specifics
-    LANDSLIDE_MIN_SIZE = 150
-    LANDSLIDE_MAX_SIZE = 250
-    NUM_STARTING_LANDSLIDES = 10
-    NUM_LANDSLIDES = 15
+    # LANDSLIDE_MIN_SIZE = 150
+    # LANDSLIDE_MAX_SIZE = 250
+    # NUM_STARTING_LANDSLIDES = 10
+    # NUM_LANDSLIDES = 15
 
-    NUM_TRUCKS = 100
-    NUM_EXCAVATORS = 15
-    NUM_FIRE_TRUCKS = 4
-    NUM_AMBULANCES = 5
+    # NUM_TRUCKS = 50
+    # NUM_EXCAVATORS = 10
+    # NUM_FIRE_TRUCKS = 4
+    # NUM_AMBULANCES = 5
 
 
 # ============================================================================
@@ -87,11 +97,11 @@ class Resource:
 
     assigned_node: ResourceNode = field(init=False)
 
-    drive_process: Optional[simpy.Process] = field(default=None, repr=False)
+    drive_process: simpy.Process | None = field(default=None, repr=False)
 
     # Visualization State
-    _location: tuple = field(default=SimulationConfig.DEPOT_LOCATION, repr=False)
-    prev_location: tuple = SimulationConfig.DEPOT_LOCATION
+    _location: tuple[float, float] = field(default=SimulationConfig.DEPOT_LOCATION, repr=False)
+    prev_location: tuple[float, float] = SimulationConfig.DEPOT_LOCATION
     _move_time: float = field(default=0, repr=False)
     move_start_time: float = 0
 
@@ -99,12 +109,12 @@ class Resource:
         self.assigned_node = self.engine.idle_resources
 
     @property
-    def location(self) -> tuple:
+    def location(self) -> tuple[float, float]:
         """The current location of the resource."""
         return self._location
 
     @location.setter
-    def location(self, loc: tuple):
+    def location(self, loc: tuple[float, float]):
         self.prev_location = self._location
         self._location = loc
 
@@ -119,10 +129,12 @@ class Resource:
         self._move_time = time
         self.move_start_time = self.engine.env.now
 
+    @override
     def __hash__(self) -> int:
         return hash(self.id)
 
-    def __eq__(self, other) -> bool:
+    @override
+    def __eq__(self, other: object) -> bool:
         return isinstance(other, Resource) and self.id == other.id
 
 
@@ -139,7 +151,7 @@ class ResourceNodeRender(TypedDict):
 
 
 class ResourceStore(simpy.FilterStore):
-    items: List[Resource]
+    items: list[Resource]
 
 
 class ResourceNode(ABC):
@@ -147,18 +159,23 @@ class ResourceNode(ABC):
     A generic node in the graph.
     """
 
-    def __init__(self, engine: SimPySimulationEngine, location: Tuple[float, float]):
+    engine: SimPySimulationEngine
+    env: simpy.Environment
+    id: int
+    location: tuple[float, float]
+
+    def __init__(self, engine: SimPySimulationEngine, location: tuple[float, float]):
         self.engine = engine
         self.env = engine.env
         self.id = engine.rng.randint(1, 10000)
         self.location = location
 
         # Physical Inventory: Resources currently ON SITE and AVAILABLE
-        self.inventory: Dict[ResourceType, ResourceStore] = defaultdict(lambda: ResourceStore(self.env))
+        self.inventory: dict[ResourceType, ResourceStore] = defaultdict(lambda: ResourceStore(self.env))
 
         # Administrative Roster: Resources ASSIGNED to this node, but not AVAILABLE
         # Could be driving or performing a task
-        self.roster: Dict[ResourceType, Set[Resource]] = defaultdict(set)
+        self.roster: dict[ResourceType, set[Resource]] = defaultdict(set)
 
     @property
     @abstractmethod
@@ -208,7 +225,7 @@ class ResourceNode(ABC):
 
         try:
             yield self.env.timeout(travel_time)
-        except simpy.Interrupt as e:
+        except simpy.Interrupt as _e:
             loc1 = resource.location
             loc2 = resource.prev_location
 
@@ -242,11 +259,15 @@ class DisasterRender(TypedDict):
     marker: str
 
 
-class Disaster(ResourceNode):
+class Disaster(ResourceNode, ABC):
     """
     Base class for all disasters.
     Handles the logistics: resources arriving, tracking active rosters, and returning home.
     """
+
+    one_hot_index: int
+
+    active: bool
 
     def __init__(
         self,
@@ -258,21 +279,23 @@ class Disaster(ResourceNode):
         self.active = True
 
     @abstractmethod
-    def needed_resources(self):
+    def needed_resources(self) -> list[ResourceType]:
         """Returns a list of resources needed to resolve the disaster."""
         raise NotImplementedError
 
     @abstractmethod
-    def percent_remaining(self):
+    def percent_remaining(self) -> float:
         """Returns the percentage of the disaster that is still active."""
         raise NotImplementedError
 
     @property
     @abstractmethod
+    @override
     def render(self) -> DisasterRender:
         """Rendering options for a disaster."""
         raise NotImplementedError
 
+    @override
     def mark_resource_available(self, resource: Resource):
         """Logic for when a resource actually reaches the coordinates."""
         # Check if the job is already done while they were driving
@@ -296,7 +319,7 @@ class Disaster(ResourceNode):
         #         self.idle_resources.transfer_resource(r)
 
         # The above as a while loop to avoid Set changes during iteration
-        for r_type, store in self.roster.items():
+        for _r_type, store in self.roster.items():
             while len(store) > 0:
                 self.engine.idle_resources.transfer_resource(store.pop())
 
@@ -311,9 +334,11 @@ class IdleResources(ResourceNode):
         super().__init__(engine, location=(0, -10))
 
     @property
+    @override
     def render(self) -> ResourceNodeRender:
         return {"color": "cs", "label": "Resource Node"}
 
+    @override
     def drive_resource(self, resource: Resource):
         """Moves resource from the resource's current node -> Target."""
         resource.assigned_node = self
@@ -323,15 +348,17 @@ class IdleResources(ResourceNode):
 
         self.mark_resource_available(resource)
 
-    def get_any_resource(self):
+    def get_any_resource(self) -> Generator[AnyOf, Resource, Resource]:
         """Returns a random resource from any of the stores."""
         # Since resources are in separate stores by type, we listen to all of them
         # and trigger when the first one becomes available.
-        get_events = {rt: self.inventory[rt].get() for rt in ResourceType}
-        finished = yield self.env.any_of(list(get_events.values()))
+        get_events: dict[ResourceType, FilterStoreGet] = {rt: self.inventory[rt].get() for rt in ResourceType}
+        finished: dict[FilterStoreGet, Resource] = yield self.env.any_of(
+            list(get_events.values())
+        )  # pyright: ignore[reportAssignmentType]
 
         winner_event = self.engine.rng.choice(list(finished.keys()))
-        resource: Resource = winner_event.value
+        resource: Resource = finished[winner_event]
 
         for rt, event in get_events.items():
             if event == winner_event:
@@ -351,28 +378,31 @@ class Depot(ResourceNode):
         super().__init__(engine, location=SimulationConfig.DEPOT_LOCATION)
 
     @property
+    @override
     def render(self) -> ResourceNodeRender:
         return {"color": "ks", "label": "Depot"}
 
+    @override
     def drive_resource(self, resource: Resource):
         yield self.env.timeout(0)
         self.engine.idle_resources.transfer_resource(resource)
 
 
-class Hospital(ResourceNode):
-    def __init__(self, engine: SimPySimulationEngine):
-        super().__init__(engine, location=SimulationConfig.HOSPITAL_LOCATION)
-        engine.env.process(self.process_loop())
+# class Hospital(ResourceNode):
+#     def __init__(self, engine: SimPySimulationEngine):
+#         super().__init__(engine, location=SimulationConfig.HOSPITAL_LOCATION)
+#         engine.env.process(self.process_loop())
 
-    @property
-    def render(self) -> ResourceNodeRender:
-        return {"color": "ms", "label": "Hospital"}
+#     @property
+#     @override
+#     def render(self) -> ResourceNodeRender:
+#         return {"color": "ms", "label": "Hospital"}
 
-    def process_loop(self):
-        while True:
-            amb = yield self.inventory[ResourceType.AMBULANCE].get()
-            yield self.env.timeout(10)  # Unloading patient
-            self.engine.idle_resources.transfer_resource(amb)
+#     def process_loop(self) -> Generator[FilterStoreGet | Timeout, Resource, Never]:
+#         while True:
+#             amb: Resource = yield self.inventory[ResourceType.AMBULANCE].get()
+#             yield self.env.timeout(10)  # Unloading patient
+#             self.engine.idle_resources.transfer_resource(amb)
 
 
 class DumpSite(ResourceNode):
@@ -385,18 +415,19 @@ class DumpSite(ResourceNode):
     def __init__(self, engine: SimPySimulationEngine):
         super().__init__(engine, location=SimulationConfig.DROP_OFF_LOCATION)
 
-        self.process = engine.env.process(self.dump_loop())
+        self.process: Process = engine.env.process(self.dump_loop())
 
     @property
+    @override
     def render(self) -> ResourceNodeRender:
         return {"color": "ys", "label": "Dump Site"}
 
-    def dump_loop(self):
-        truck_specs = ResourceType.TRUCK.specs
+    def dump_loop(self) -> Generator[FilterStoreGet | Timeout, Resource, Never]:
+        # truck_specs = ResourceType.TRUCK.specs
 
         while True:
             # 1. Get Resources from Inventory (Must be physically here)
-            truck = yield self.inventory[ResourceType.TRUCK].get()
+            truck: Resource = yield self.inventory[ResourceType.TRUCK].get()
 
             # 2. Take dirt
             yield self.env.timeout(1)
@@ -411,15 +442,20 @@ class DumpSite(ResourceNode):
 
 
 class DisasterStore(simpy.FilterStore):
-    items: List[Disaster]
+    items: list[Disaster]
 
-    def wait_for_any(self):
+    def wait_for_any(self) -> Generator[FilterStoreGet | StorePut, Disaster, None]:
         """Yields until any item is available."""
         if self.items:
             return
 
-        d = yield self.get()
+        d: Disaster = yield self.get()
         yield self.put(d)
+
+    if TYPE_CHECKING:
+
+        @override
+        def get(self, filter: Callable[[Disaster], bool] = lambda item: True) -> FilterStoreGet: ...
 
 
 class Landslide(Disaster):
@@ -427,6 +463,13 @@ class Landslide(Disaster):
     Requires: EXCAVATOR + TRUCK.
     Work cannot happen without both.
     """
+
+    one_hot_index: int = 0
+
+    dirt: simpy.Container
+    initial_size: float
+    dump_node: DumpSite
+    process: simpy.Process
 
     def __init__(self, engine: SimPySimulationEngine, size: float, dump_node: DumpSite):
         super().__init__(engine)
@@ -438,27 +481,30 @@ class Landslide(Disaster):
 
         self.process = engine.env.process(self.work_loop())
 
-    def needed_resources(self):
+    @override
+    def needed_resources(self) -> list[ResourceType]:
         return [ResourceType.EXCAVATOR, ResourceType.TRUCK]
 
+    @override
     def percent_remaining(self):
         return self.dirt.level / self.initial_size
 
     @property
+    @override
     def render(self) -> DisasterRender:
         return {"color": "brown", "label": "Landslide", "marker": "o"}
 
-    def work_loop(self):
+    def work_loop(self) -> Generator[FilterStoreGet | ContainerGet | AllOf | Process, Resource, None]:
         """The specific logic for clearing a landslide."""
         truck_specs = ResourceType.TRUCK.specs
 
-        dump_trips = []
+        dump_trips: list[Process] = []
 
         while self.active and self.dirt.level > 0:
             # 1. Request resources
 
-            excavator = yield self.inventory[ResourceType.EXCAVATOR].get()
-            truck = yield self.inventory[ResourceType.TRUCK].get()
+            excavator: Resource = yield self.inventory[ResourceType.EXCAVATOR].get()
+            truck: Resource = yield self.inventory[ResourceType.TRUCK].get()
 
             # 2. Perform Work
             amount = min(truck_specs["capacity"], self.dirt.level)
@@ -484,123 +530,133 @@ class Landslide(Disaster):
         yield self.env.process(self.resolve())
 
 
-class StructureFire(Disaster):
-    """
-    Requires: FIRE_TRUCK (Parallel) and AMBULANCE (Parallel).
-    Firefighters fight fire, Medics help people. Independent.
-    """
+# class StructureFire(Disaster):
+#     """
+#     Requires: FIRE_TRUCK (Parallel) and AMBULANCE (Parallel).
+#     Firefighters fight fire, Medics help people. Independent.
+#     """
 
-    def __init__(self, engine: SimPySimulationEngine, intensity: float, casualties: float, hospital_node: Hospital):
-        super().__init__(engine)
-        self.fire_intensity = simpy.Container(engine.env, init=intensity)
-        self.casualties = simpy.Container(engine.env, init=casualties)
-        self.initial_intensity = intensity
-        self.initial_casualties = casualties
-        self.hospital = hospital_node
+#     one_hot_index: int = 1
 
-        engine.env.process(self.firefight_loop())
-        engine.env.process(self.rescue_loop())
+#     def __init__(self, engine: SimPySimulationEngine, intensity: float, casualties: float, hospital_node: Hospital):
+#         super().__init__(engine)
+#         self.fire_intensity: Container = simpy.Container(engine.env, init=intensity)
+#         self.casualties: Container = simpy.Container(engine.env, init=casualties)
+#         self.initial_intensity: float = intensity
+#         self.initial_casualties: float = casualties
+#         self.hospital: Hospital = hospital_node
 
-    def needed_resources(self):
-        return [ResourceType.FIRE_TRUCK, ResourceType.AMBULANCE]
+#         engine.env.process(self.firefight_loop())
+#         engine.env.process(self.rescue_loop())
 
-    def percent_remaining(self):
-        return (self.fire_intensity.level + self.casualties.level) / (self.initial_intensity + self.initial_casualties)
+#     @override
+#     def needed_resources(self):
+#         return [ResourceType.FIRE_TRUCK, ResourceType.AMBULANCE]
 
-    @property
-    def render(self) -> DisasterRender:
-        return {"color": "red", "label": "Structure Fire", "marker": "p"}
+#     @override
+#     def percent_remaining(self):
+#         return (self.fire_intensity.level + self.casualties.level) / (self.initial_intensity + self.initial_casualties)
 
-    def check_done(self):
-        if self.fire_intensity.level <= 0 and self.casualties.level <= 0:
-            self.env.process(self.resolve())
+#     @property
+#     @override
+#     def render(self) -> DisasterRender:
+#         return {"color": "red", "label": "Structure Fire", "marker": "p"}
 
-    def firefight_loop(self):
-        while self.active and self.fire_intensity.level > 0:
-            ft = yield self.inventory[ResourceType.FIRE_TRUCK].get()
+#     def check_done(self):
+#         if self.fire_intensity.level <= 0 and self.casualties.level <= 0:
+#             self.env.process(self.resolve())
 
-            work_duration = 10
-            amount = ResourceType.FIRE_TRUCK.specs["work_rate"] * work_duration
+#     def firefight_loop(self) -> Generator[FilterStoreGet | Timeout | ContainerGet | StorePut, Resource, None]:
+#         while self.active and self.fire_intensity.level > 0:
+#             ft: Resource = yield self.inventory[ResourceType.FIRE_TRUCK].get()
 
-            yield self.env.timeout(work_duration)
+#             work_duration = 10
+#             amount = ResourceType.FIRE_TRUCK.specs["work_rate"] * work_duration
 
-            yield self.fire_intensity.get(min(amount, self.fire_intensity.level))
+#             yield self.env.timeout(work_duration)
 
-            yield self.inventory[ResourceType.FIRE_TRUCK].put(ft)
+#             yield self.fire_intensity.get(min(amount, self.fire_intensity.level))
 
-        self.check_done()
+#             yield self.inventory[ResourceType.FIRE_TRUCK].put(ft)
 
-    def rescue_loop(self):
-        while self.active and self.casualties.level > 0:
-            amb = yield self.inventory[ResourceType.AMBULANCE].get()
+#         self.check_done()
 
-            yield self.env.timeout(5)  # Stabilize patient
+#     def rescue_loop(self) -> Generator[FilterStoreGet | Timeout | ContainerGet, Resource, None]:
+#         while self.active and self.casualties.level > 0:
+#             amb: Resource = yield self.inventory[ResourceType.AMBULANCE].get()
 
-            yield self.casualties.get(1)
-            # Ambulance leaves to hospital
-            self.hospital.transfer_resource(amb)
+#             yield self.env.timeout(5)  # Stabilize patient
 
-        self.check_done()
+#             yield self.casualties.get(1)
+#             # Ambulance leaves to hospital
+#             self.hospital.transfer_resource(amb)
+
+#         self.check_done()
 
 
-class BuildingCollapse(Disaster):
-    """
-    Requires: EXCAVATOR + FIRE_TRUCK (Simultaneous) to find casualties.
-    AMBULANCE to remove casualty.
-    3 resource types needed.
-    """
+# class BuildingCollapse(Disaster):
+#     """
+#     Requires: EXCAVATOR + FIRE_TRUCK (Simultaneous) to find casualties.
+#     AMBULANCE to remove casualty.
+#     3 resource types needed.
+#     """
 
-    def __init__(self, engine: SimPySimulationEngine, rubble_amount: float, hospital_node: Hospital):
-        super().__init__(engine)
-        self.rubble = simpy.Container(engine.env, init=rubble_amount)
-        self.initial_rubble = rubble_amount
-        self.initial_casualties_trapped = math.ceil(rubble_amount / 10)
-        self.casualties_trapped = simpy.Container(engine.env, init=self.initial_casualties_trapped)
-        self.hospital = hospital_node
+#     one_hot_index: int = 2
 
-        engine.env.process(self.clear_loop())
-        event = engine.env.process(self.rescue_loop())
+#     def __init__(self, engine: SimPySimulationEngine, rubble_amount: float, hospital_node: Hospital):
+#         super().__init__(engine)
+#         self.rubble: Container = simpy.Container(engine.env, init=rubble_amount)
+#         self.initial_rubble: float = rubble_amount
+#         self.initial_casualties_trapped: int = math.ceil(rubble_amount / 10)
+#         self.casualties_trapped: Container = simpy.Container(engine.env, init=self.initial_casualties_trapped)
+#         self.hospital: Hospital = hospital_node
 
-    def needed_resources(self):
-        return [ResourceType.EXCAVATOR, ResourceType.FIRE_TRUCK, ResourceType.AMBULANCE]
+#         engine.env.process(self.clear_loop())
+#         engine.env.process(self.rescue_loop())
 
-    def percent_remaining(self):
-        return (self.rubble.level + self.casualties_trapped.level) / (
-            self.initial_rubble + self.initial_casualties_trapped
-        )
+#     @override
+#     def needed_resources(self):
+#         return [ResourceType.EXCAVATOR, ResourceType.FIRE_TRUCK, ResourceType.AMBULANCE]
 
-    @property
-    def render(self) -> DisasterRender:
-        return {"color": "gray", "label": "Building Collapse", "marker": "X"}
+#     @override
+#     def percent_remaining(self):
+#         return (self.rubble.level + self.casualties_trapped.level) / (
+#             self.initial_rubble + self.initial_casualties_trapped
+#         )
 
-    def check_done(self):
-        if self.rubble.level <= 0 and self.casualties_trapped.level <= 0:
-            self.env.process(self.resolve())
+#     @property
+#     @override
+#     def render(self) -> DisasterRender:
+#         return {"color": "gray", "label": "Building Collapse", "marker": "X"}
 
-    def clear_loop(self):
-        while self.active and self.rubble.level > 0:
-            # Phase 1: Clear Rubble (Needs Excavator AND Fire Truck for safety)
+#     def check_done(self):
+#         if self.rubble.level <= 0 and self.casualties_trapped.level <= 0:
+#             self.env.process(self.resolve())
 
-            exc = yield self.inventory[ResourceType.EXCAVATOR].get()
-            ft = yield self.inventory[ResourceType.FIRE_TRUCK].get()
+#     def clear_loop(self) -> Generator[FilterStoreGet | Timeout | ContainerGet | StorePut, Resource, None]:
+#         while self.active and self.rubble.level > 0:
+#             # Phase 1: Clear Rubble (Needs Excavator AND Fire Truck for safety)
 
-            yield self.env.timeout(15)  # Slow, careful work
-            amount = 10
-            yield self.rubble.get(min(amount, self.rubble.level))
+#             exc: Resource = yield self.inventory[ResourceType.EXCAVATOR].get()
+#             ft: Resource = yield self.inventory[ResourceType.FIRE_TRUCK].get()
 
-            yield self.inventory[ResourceType.EXCAVATOR].put(exc)
-            yield self.inventory[ResourceType.FIRE_TRUCK].put(ft)
+#             yield self.env.timeout(15)  # Slow, careful work
+#             amount = 10
+#             yield self.rubble.get(min(amount, self.rubble.level))
 
-        self.check_done()
+#             yield self.inventory[ResourceType.EXCAVATOR].put(exc)
+#             yield self.inventory[ResourceType.FIRE_TRUCK].put(ft)
 
-    def rescue_loop(self):
-        while self.active and self.casualties_trapped.level > 0:
-            # Phase 2: Check for victims (Simplified: 1 unit of rubble cleared = chance of victim rescue available)
+#         self.check_done()
 
-            # We can only rescue if we have an ambulance
-            amb = yield self.inventory[ResourceType.AMBULANCE].get()
-            yield self.env.timeout(5)
-            yield self.casualties_trapped.get(1)
-            self.hospital.transfer_resource(amb)
+#     def rescue_loop(self) -> Generator[FilterStoreGet | Timeout | ContainerGet, Resource, None]:
+#         while self.active and self.casualties_trapped.level > 0:
+#             # Phase 2: Check for victims (Simplified: 1 unit of rubble cleared = chance of victim rescue available)
 
-        self.check_done()
+#             # We can only rescue if we have an ambulance
+#             amb: Resource = yield self.inventory[ResourceType.AMBULANCE].get()
+#             yield self.env.timeout(5)
+#             yield self.casualties_trapped.get(1)
+#             self.hospital.transfer_resource(amb)
+
+#         self.check_done()

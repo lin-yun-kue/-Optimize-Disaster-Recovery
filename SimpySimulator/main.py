@@ -1,7 +1,7 @@
 from __future__ import annotations
 import simpy
 import statistics
-from typing import List, Dict, TypedDict, DefaultDict, TYPE_CHECKING
+from typing import Any, List, Dict, TypedDict, TYPE_CHECKING
 import matplotlib.pyplot as plt
 from matplotlib.axes import Axes
 from matplotlib.figure import Figure
@@ -9,12 +9,12 @@ from math import pi as PI, cos, sin
 from simpy.core import EmptySchedule
 from argparse import ArgumentParser
 from collections import defaultdict
-from engine import SimPySimulationEngine
-from simulation import *
+from .engine import SimPySimulationEngine
+from .simulation import *
 
 
 class PolicyResult(TypedDict):
-    success: List[float]
+    success: list[float]
     fail: int
 
 
@@ -33,9 +33,9 @@ if __name__ == "__main__":
     print(f"\n--- STARTING COMPARISON ({args.seeds} Seeds) ---\n")
 
     # Store results as: {"policy_name": {"success": [times...], "fail": count}}
-    aggregated_results: DefaultDict[str, PolicyResult] = defaultdict(lambda: {"success": [], "fail": 0})
+    aggregated_results: defaultdict[str, PolicyResult] = defaultdict(lambda: {"success": [], "fail": 0})
 
-    from policies import POLICIES
+    from .policies import POLICIES
 
     for seed in range(args.seeds):
         print(f"--- {seed} ---")
@@ -75,7 +75,7 @@ if __name__ == "__main__":
     print("-" * 85)
 
     # Calculate statistics
-    final_stats = []
+    final_stats: list[tuple[str, float, float, float, float, float]] = []
     for name, data in aggregated_results.items():
         success_times = data["success"]
         fail_count = data["fail"]

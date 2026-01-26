@@ -1,5 +1,5 @@
-from typing import Dict, Any, Protocol
-
+from typing import Dict, Any, Protocol, Optional
+import random
 
 class DecisionAgent(Protocol):
     """
@@ -17,28 +17,16 @@ class DecisionAgent(Protocol):
         """
         ...
 
-class LongestQueueAgent:
-    """
-    一個最簡單的 rule-based agent：
-    - 選第一台可用卡車
-    - 去 queue 最長的地點
-    """
+class RandomDispatchAgent:
+    def decide(self, observation: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        trucks = list(observation["truck_locations"].keys())
+        tasks = observation["pending_tasks"]
 
-    # todo update from location logic
-    def decide(self, observation):
-        trucks = observation.get("available_trucks", [])
-        queues = observation.get("queue_lengths", {})
-
-        if not trucks or not queues:
-            return None  # 代表不做任何決策
-
-        # 找 queue 最長的站點
-        # todo: implement a beta version 
-        target_location = max(queues, key=lambda k: queues[k])
-        dispatch_target = ""
+        if not trucks or not tasks:
+            return None
 
         return {
-            "truck_id": trucks[0],
-            "from_location": target_location,
-            "dispatch_target": dispatch_target
+            "type": "dispatch",
+            "truck_id": random.choice(trucks),
+            "task_id": random.choice(tasks),
         }

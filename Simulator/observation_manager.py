@@ -12,6 +12,7 @@ class ObservationManager:
 
     def remove(self, resource_id):
         if resource_id in self.observed_resources:
+            print("observation remove resource")
             self.observed_resources.remove(resource_id)
             # 👇 關鍵：被移除時觸發
             self.on_trigger()

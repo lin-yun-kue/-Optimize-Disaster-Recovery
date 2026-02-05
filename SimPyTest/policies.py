@@ -485,6 +485,124 @@ def tournament_policy_func(resource: Resource, disasters: list[Disaster], env: s
     target = [d for d in disasters if d.id == best_result["move_id"]][0]
     return target
 
+# ============================================================================
+# MARK: KSwitchPolicy
+# ============================================================================
+
+class KSwitchPolicy:
+    """
+    分岔後：
+      - 前 K 次 decision 用 first_policy
+      - 第 K+1 次開始都用 rest_policy
+    K=1 => 下一次 decision 用 first_policy，後面都 rest_policy
+    """
+    def __init__(self, first_policy: Policy, rest_policy: Policy, k: int):
+        if k < 0:
+            raise ValueError("k must be >= 0")
+        self.first_policy = first_policy
+        self.rest_policy = rest_policy
+        self.k = k
+
+        self.name = f"switch({first_policy.name}->{rest_policy.name},k={k})"
+
+        self._post_branch_decision_count = 0
+        self.first_move_id = None  # 分岔後第1次 decision 的結果（用來回主模擬）
+        self.func = self._func
+
+    def _func(self, resource, disasters, env):
+        self._post_branch_decision_count += 1
+
+        if self._post_branch_decision_count <= self.k:
+            chosen = self.first_policy.func(resource, disasters, env)
+        else:
+            chosen = self.rest_policy.func(resource, disasters, env)
+
+        # 記錄分岔後第 1 次 decision 的選擇（重要：回主模擬用）
+        if self._post_branch_decision_count == 1:
+            # 這裡假設 policy 回傳的是 Disaster 物件，且有 .id
+            self.first_move_id = chosen.id
+
+        return chosen
+    
+def evaluate_policy_worker_switch(first_policy: Policy, rest_policy: Policy, k: int, seed: int, history: list[int]) -> PolicyResult:
+    try:
+        # 1) 用 wrapper policy 包起來（engine 仍然只吃到「一個 policy」）
+        switch_policy = KSwitchPolicy(first_policy, rest_policy, k)
+
+        # 2) Create Fresh Engine
+        sim_fork = SimPySimulationEngine(switch_policy, seed, live_plot=False)
+        sim_fork.initialize_world()
+
+        # 3) Load History for Replay
+        sim_fork.replay_buffer = list(history)
+
+        # 4) Run to completion
+        success = sim_fork.run()
+
+        time_taken = sim_fork.get_summary()["non_idle_time"]
+
+        # 分岔後第 1 次 decision 的 move_id（K=1 就是你要的「下一步」）
+        move_id = switch_policy.first_move_id
+
+        # 保底：如果你想兼容 engine 的 branch_decision 行為，也可以 fallback
+        if move_id is None:
+            move_id = sim_fork.branch_decision
+
+        return {
+            "success": success,
+            "time": time_taken,
+            "policy": switch_policy.name,   # 記錄是 switch(...)
+            "move_id": move_id,
+        }
+    except Exception as e:
+        print(f"Exception: {e}")
+        raise
+
+def k_tournament_policy_func(resource: Resource, disasters: list[Disaster], env: simpy.Environment) -> Disaster:
+    """
+    The Meta-Policy (Replay Version).
+    1. Instantiate N new simulation engines (one per candidate policy).
+    2. Feed them the `decision_log` from the Master simulation.
+    3. Run them. They will fast-forward replay history, then switch to candidate policy.
+    4. Compare completion times.
+    5. Extract the specific move the winner made at the branching point.
+    """
+    master_engine = resource.engine
+
+    # Get current history from Master
+    current_history = list(master_engine.decision_log)
+    master_seed = master_engine.seed
+
+    exclude_policy = ["tournament", "k-tournament"]
+    candidates = [p for p in POLICIES if p.name not in exclude_policy]
+
+    k=1
+    tasks = []
+    for first in candidates:
+        for rest in candidates:
+            tasks.append((first, rest, k, master_seed, current_history))
+
+
+    with multiprocessing.Pool(processes=len(candidates)) as pool:
+        results = pool.starmap(evaluate_policy_worker_switch, tasks)
+
+    best_result = None
+    min_time = float("inf")
+
+    for result in results:
+        if result["success"] and result["time"] < min_time:
+            min_time = result["time"]
+            best_result = result
+
+    if best_result is None:
+        raise Exception("No policy was able to complete the simulation.")
+
+    # Record winner
+    master_engine._tournament_decisions.append((env.now, best_result["policy"]))
+
+    # Find the disaster object in the Master's store that matches the ID
+    target = [d for d in disasters if d.id == best_result["move_id"]][0]
+    return target
 
 # ============================================================================
 # MARK: Policy Map
@@ -503,4 +621,5 @@ POLICIES: list[Policy] = [
     Policy("gravity", gravity_policy),
     Policy("chain_gang", chain_gang_policy),
     Policy("tournament", tournament_policy_func),
+    Policy("k-tournament", k_tournament_policy_func),
 ]

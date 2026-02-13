@@ -491,10 +491,9 @@ def tournament_policy_func(resource: Resource, disasters: list[Disaster], env: s
 
 class KSwitchPolicy:
     """
-    分岔後：
-      - 前 K 次 decision 用 first_policy
-      - 第 K+1 次開始都用 rest_policy
-    K=1 => 下一次 decision 用 first_policy，後面都 rest_policy
+      - before K-decision use first_policy
+      - after K+1 use rest_policy
+    K=1 => first decision use first_policy，rest of decision use rest_policy
     """
     def __init__(self, first_policy: Policy, rest_policy: Policy, k: int):
         if k < 0:
@@ -506,7 +505,7 @@ class KSwitchPolicy:
         self.name = f"switch({first_policy.name}->{rest_policy.name},k={k})"
 
         self._post_branch_decision_count = 0
-        self.first_move_id = None  # 分岔後第1次 decision 的結果（用來回主模擬）
+        self.first_move_id = None 
         self.func = self._func
 
     def _func(self, resource, disasters, env):
@@ -517,16 +516,16 @@ class KSwitchPolicy:
         else:
             chosen = self.rest_policy.func(resource, disasters, env)
 
-        # 記錄分岔後第 1 次 decision 的選擇（重要：回主模擬用）
+        # Record the choice made during the first decision after the divergence (Important: For main simulation use).
         if self._post_branch_decision_count == 1:
-            # 這裡假設 policy 回傳的是 Disaster 物件，且有 .id
+            # Here we assume that the policy returns a Disaster object, and it has a .id.
             self.first_move_id = chosen.id
 
         return chosen
     
 def evaluate_policy_worker_switch(first_policy: Policy, rest_policy: Policy, k: int, seed: int, history: list[int]) -> PolicyResult:
     try:
-        # 1) 用 wrapper policy 包起來（engine 仍然只吃到「一個 policy」）
+        # 1) use wrapper policy 
         switch_policy = KSwitchPolicy(first_policy, rest_policy, k)
 
         # 2) Create Fresh Engine
@@ -541,7 +540,7 @@ def evaluate_policy_worker_switch(first_policy: Policy, rest_policy: Policy, k: 
 
         time_taken = sim_fork.get_summary()["non_idle_time"]
 
-        # 分岔後第 1 次 decision 的 move_id（K=1 就是你要的「下一步」）
+        # The move_id of the first decision after the divergence (K=1 is the “next step” you’re looking for).
         move_id = switch_policy.first_move_id
 
         # 保底：如果你想兼容 engine 的 branch_decision 行為，也可以 fallback

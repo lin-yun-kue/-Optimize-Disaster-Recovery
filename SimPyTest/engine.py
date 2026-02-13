@@ -71,11 +71,31 @@ class ScenarioConfig:
     num_excavators: int | tuple[int, int] = 10
 
     # Disaster counts
-    num_landslides: int | tuple[int, int] = (10, 15)
+    num_landslides: int | tuple[int, int] = (10, 10)
     landslide_size_range: tuple[int, int] = (150, 250)
 
     # Optional callback for manual placement: (engine) -> None
     custom_setup_fn: Callable[[SimPySimulationEngine], None] | None = None
+
+@dataclass
+class Record:
+    # resource information
+    resource_type: int
+    prev_location: tuple[float, float]
+
+    # disaster infromation
+    id: list[int]
+    onehot_index: list[int]
+    remainging: list[float]
+    remain_size: list[float]
+    locations: list[tuple[float, float]]
+
+
+    target_id: int
+    policy: str
+
+
+
 
 
 # ============================================================================
@@ -124,6 +144,9 @@ class SimPySimulationEngine:
         self.decision_log: list[int] = []
         self.replay_buffer: list[int] = []
         self.branch_decision: int | None = None
+
+        # status and decision
+        self.records: list =[]
 
         # whether the scheduled "add_disasters" is present and its process reference
         self.disasters_process: simpy.Process | None = None
@@ -255,6 +278,20 @@ class SimPySimulationEngine:
                 # Record this decision for future replays
                 self.decision_log.append(target_disaster.id)
 
+                # Record status and policy
+                record = Record(
+                    resource_type=resource.resource_type.value,
+                    prev_location=resource.prev_location,
+                    id=[d.id for d in self.disaster_store.items],
+                    onehot_index=[d.one_hot_index for d in self.disaster_store.items],
+                    remainging=[d.percent_remaining() for d in self.disaster_store.items],
+                    remain_size=[d.dirt.level for d in self.disaster_store.items],
+                    locations=[d.location for d in self.disaster_store.items],
+                    target_id=target_disaster.id,
+                    policy=self._tournament_decisions[-1] if self._tournament_decisions else self.policy.name
+                )
+                self.records.append(record)
+
             # disaster = self.policy.func(resource, self.disaster_store.items, self.env)
             target_disaster.transfer_resource(resource)
 
@@ -328,6 +365,7 @@ class SimPySimulationEngine:
         # return res
         return {
             "non_idle_time": self.non_idle_time,
+            "records": self.records
         }
 
     def setup_plot(self) -> tuple[Figure, list[Axes]]:

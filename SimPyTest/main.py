@@ -9,13 +9,21 @@ from math import pi as PI, cos, sin
 from simpy.core import EmptySchedule
 from argparse import ArgumentParser
 from collections import defaultdict
-from .engine import SimPySimulationEngine
+from .engine import SimPySimulationEngine, Record
 from .simulation import *
+import json
+from dataclasses import asdict
 
 
 class PolicyResult(TypedDict):
     success: list[float]
     fail: int
+
+def save_jsonl(records, path: str):
+    with open(path, "w", encoding="utf-8") as f:
+        for r in records:
+            f.write(json.dumps(asdict(r), ensure_ascii=False) + "\n")
+
 
 
 if __name__ == "__main__":
@@ -34,6 +42,7 @@ if __name__ == "__main__":
 
     # Store results as: {"policy_name": {"success": [times...], "fail": count}}
     aggregated_results: defaultdict[str, PolicyResult] = defaultdict(lambda: {"success": [], "fail": 0})
+    records: list[Record] = []
 
     from .policies import POLICIES
 
@@ -45,9 +54,13 @@ if __name__ == "__main__":
             engine = SimPySimulationEngine(policy=policy, seed=seed, live_plot=args.live)
             engine.initialize_world()
             success = engine.run()
-            duration = engine.get_summary()["non_idle_time"]
+            
+            summary = engine.get_summary()
+            duration = summary["non_idle_time"]
+
             if success:
                 aggregated_results[args.policy]["success"].append(duration)
+                records.extend(summary["records"])
             else:
                 aggregated_results[args.policy]["fail"] += 1
 
@@ -107,3 +120,5 @@ if __name__ == "__main__":
 
         print(f"{name:<20} | {rate:<9.1f}% | {avg_str:<10} | {stdev_str:<10} | {mn_str:<8} | {mx_str:<8}")
     print("=" * 85 + "\n")
+
+    # save_jsonl(records, "dataset.jsonl")

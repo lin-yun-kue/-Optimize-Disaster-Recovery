@@ -1,21 +1,27 @@
 from __future__ import annotations
 
-import math
+import random
 from abc import ABC, abstractmethod
 from collections import defaultdict
 from collections.abc import Generator
 from dataclasses import dataclass, field
-from enum import Enum, auto
-from typing import TYPE_CHECKING, Callable, Never, TypedDict, final
+from enum import Enum
+from typing import TYPE_CHECKING, Any, Callable, TypedDict
+
+try:
+    from typing import Never
+except ImportError:
+    from typing import NoReturn as Never
 
 import simpy
-from simpy.events import AllOf, AnyOf, Process, Timeout
+from simpy.events import AllOf, AnyOf, Process
 from simpy.resources.container import ContainerGet
 from simpy.resources.store import FilterStoreGet, StorePut
 from typing_extensions import override
 
 if TYPE_CHECKING:
     from .engine import SimPySimulationEngine
+    from typing import Optional
 
 # ============================================================================
 # MARK: Configuration & Enums
@@ -31,13 +37,13 @@ class ResourceRender(TypedDict):
 
 class ResourceType(Enum):
     TRUCK = (
-        auto(),
-        {"speed": 2.0, "capacity": 10, "load_time": 10},
+        0,
+        {"speed": 23.4, "capacity": 10, "load_time": 10, "dump_time": 10},
         ResourceRender({"marker": "^", "color": "blue"}),
     )
     EXCAVATOR = (
-        auto(),
-        {"speed": 1.0, "work_rate": 10},
+        1,
+        {"speed": 11.6, "work_rate": 10},
         ResourceRender({"marker": "P", "color": "orange"}),
     )
     # FIRE_TRUCK = (
@@ -53,7 +59,6 @@ class ResourceType(Enum):
 
     def __init__(self, value: int, specs: dict[str, float], render: ResourceRender):
         self._value_ = value
-        # self.value: int = value
         self.specs = specs
         self.render = render
 
@@ -62,26 +67,6 @@ class ResourceType(Enum):
         @property
         @override
         def value(self) -> int: ...
-
-
-@final
-class SimulationConfig:
-    DROP_OFF_LOCATION = (75, 75)
-    DEPOT_LOCATION = (0, 0)
-    HOSPITAL_LOCATION = (-75, -75)
-
-    # Ticks should be in minutes
-
-    # Disaster Specifics
-    LANDSLIDE_MIN_SIZE = 150
-    LANDSLIDE_MAX_SIZE = 250
-    NUM_STARTING_LANDSLIDES = 10
-    NUM_LANDSLIDES = 15
-
-    NUM_TRUCKS = 100
-    NUM_EXCAVATORS = 15
-    NUM_FIRE_TRUCKS = 4
-    NUM_AMBULANCES = 5
 
 
 # ============================================================================
@@ -100,13 +85,52 @@ class Resource:
     drive_process: simpy.Process | None = field(default=None, repr=False)
 
     # Visualization State
-    _location: tuple[float, float] = field(default=SimulationConfig.DEPOT_LOCATION, repr=False)
-    prev_location: tuple[float, float] = SimulationConfig.DEPOT_LOCATION
+    _location: tuple[float, float] = field(default=(0, 0), repr=False)
+    prev_location: tuple[float, float] = (0, 0)
     _move_time: float = field(default=0, repr=False)
     move_start_time: float = 0
 
+    # Resource constraints and costs
+    home_depot: Optional["Depot"] = field(default=None, repr=False)  # Must return here to refuel
+    fuel_level: float = field(default=100.0, repr=False)  # 0-100%
+    fuel_capacity: float = field(default=100.0, repr=False)  # Gallons
+    fuel_consumption_rate: float = field(default=5.0, repr=False)  # Gallons/hour
+    hourly_operating_cost: float = field(default=75.0, repr=False)  # $/hour
+    accumulated_cost: float = field(default=0.0, repr=False)  # Total cost accrued
+    total_hours_operated: float = field(default=0.0, repr=False)  # Total operational hours
+
     def __post_init__(self):
         self.assigned_node = self.engine.idle_resources
+
+    def consume_fuel(self, hours: float) -> float:
+        """Consume fuel for given hours of operation. Returns fuel consumed."""
+        # Apply time variance from config if available
+        variance = 0.0
+        if hasattr(self.engine, "scenario_config"):
+            variance = getattr(self.engine.scenario_config, "time_variance", 0.0)
+
+        actual_consumption = self.fuel_consumption_rate * hours * random.uniform(1 - variance, 1 + variance)
+        self.fuel_level = max(0, self.fuel_level - actual_consumption)
+        return actual_consumption
+
+    def add_operating_cost(self, hours: float) -> float:
+        """Add operating cost for given hours. Returns cost added."""
+        cost = self.hourly_operating_cost * hours
+        self.accumulated_cost += cost
+        self.total_hours_operated += hours
+        return cost
+
+    def needs_refuel(self, threshold: float = 20.0) -> bool:
+        """Check if resource needs refueling (below threshold %)."""
+        return self.fuel_level < (self.fuel_capacity * threshold / 100)
+
+    def refuel(self) -> None:
+        """Refuel to full capacity."""
+        self.fuel_level = self.fuel_capacity
+
+    def refuel_amount(self, gallons: float) -> None:
+        """Add specific amount of fuel."""
+        self.fuel_level = min(self.fuel_capacity, self.fuel_level + gallons)
 
     @property
     def location(self) -> tuple[float, float]:
@@ -187,7 +211,7 @@ class ResourceNode(ABC):
         """Logic when a resource physically arrives."""
         self.inventory[resource.resource_type].put(resource)
 
-    def transfer_resource(self, resource: Resource):
+    def transfer_resource(self, resource: Resource, instant: bool = False):
         """
         Moves the resource from its current node to this node.
         """
@@ -203,7 +227,18 @@ class ResourceNode(ABC):
             except Exception:
                 pass
 
-        resource.drive_process = self.env.process(self.drive_resource(resource))
+            # print(f"Assigning resource {resource} to")
+        if instant:
+            # resource.assigned_node = self
+            # self.roster[resource.resource_type].add(resource)
+            # resource.location = self.location
+            # resource.move_time = 0
+            # self.mark_resource_available(resource)
+            # resource.drive_process = None
+            for _ in self.drive_resource(resource):
+                pass
+        else:
+            resource.drive_process = self.env.process(self.drive_resource(resource))
 
     def drive_resource(self, resource: Resource):
         """
@@ -217,10 +252,22 @@ class ResourceNode(ABC):
 
         start_loc = resource.location
         end_loc = self.location
-        dist = math.hypot(end_loc[0] - start_loc[0], end_loc[1] - start_loc[1])
-        travel_time = dist / specs["speed"]
 
-        resource.location = self.location
+        if start_loc == (0, 0):
+            travel_time = 0
+        else:
+            # Use road graph distance if available, otherwise use Euclidean
+            dist = self.engine.get_distance(resource, self)
+
+            travel_time = dist / specs["speed"]
+
+        # Snap destination to road graph if in GIS mode
+        if self.engine.gis_config is not None and self.engine.road_graph is not None:
+            spatial_index = self.engine.gis_config.get_spatial_index()
+            snapped_loc = spatial_index.get_nearest_node(self.location[0], self.location[1])
+            resource.location = snapped_loc
+        else:
+            resource.location = self.location
         resource.move_time = travel_time
 
         try:
@@ -237,6 +284,11 @@ class ResourceNode(ABC):
                 loc1[0] * time_frac + loc2[0] * (1 - time_frac),
                 loc1[1] * time_frac + loc2[1] * (1 - time_frac),
             )
+
+            # Snap interrupted location to road graph if in GIS mode
+            if self.engine.gis_config is not None and self.engine.road_graph is not None:
+                spatial_index = self.engine.gis_config.get_spatial_index()
+                loc = spatial_index.get_nearest_node(loc[0], loc[1])
 
             resource.location = loc
             resource.move_time = 0
@@ -272,8 +324,13 @@ class Disaster(ResourceNode, ABC):
     def __init__(
         self,
         engine: SimPySimulationEngine,
+        location: tuple[float, float] | None = None,
     ):
-        loc = (engine.rng.randint(-100, 100), engine.rng.randint(-100, 100))
+        if location is None:
+            # Random location if not specified
+            loc = (engine.rng.randint(-100, 100), engine.rng.randint(-100, 100))
+        else:
+            loc = location
         super().__init__(engine, loc)
 
         self.active = True
@@ -286,6 +343,11 @@ class Disaster(ResourceNode, ABC):
     @abstractmethod
     def percent_remaining(self) -> float:
         """Returns the percentage of the disaster that is still active."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def get_scale(self) -> float:
+        """Returns the scale of the disaster."""
         raise NotImplementedError
 
     @property
@@ -339,7 +401,7 @@ class IdleResources(ResourceNode):
         return {"color": "cs", "label": "Resource Node"}
 
     @override
-    def drive_resource(self, resource: Resource):
+    def drive_resource(self, resource: Resource, instant: bool = False):
         """Moves resource from the resource's current node -> Target."""
         resource.assigned_node = self
         self.roster[resource.resource_type].add(resource)
@@ -374,8 +436,8 @@ class IdleResources(ResourceNode):
 
 
 class Depot(ResourceNode):
-    def __init__(self, engine: SimPySimulationEngine):
-        super().__init__(engine, location=SimulationConfig.DEPOT_LOCATION)
+    def __init__(self, engine: SimPySimulationEngine, location: tuple[float, float]):
+        super().__init__(engine, location=location)
 
     @property
     @override
@@ -384,8 +446,8 @@ class Depot(ResourceNode):
 
     @override
     def drive_resource(self, resource: Resource):
-        yield self.env.timeout(0)
-        self.engine.idle_resources.transfer_resource(resource)
+        self.engine.idle_resources.transfer_resource(resource, True)
+        return super().drive_resource(resource)
 
 
 # class Hospital(ResourceNode):
@@ -407,13 +469,23 @@ class Depot(ResourceNode):
 
 class DumpSite(ResourceNode):
     """
-    The Dump Site is a Node.
-    Trucks arrive here, wait for 'dump_time', and then automatically
-    return to their ASSIGNED node (the Landslide).
+    The Dump Site is a Node with capacity constraints.
+    Trucks arrive here, wait for available dump slots, wait for 'dump_time',
+    and then automatically return to idle resources.
     """
 
-    def __init__(self, engine: SimPySimulationEngine):
-        super().__init__(engine, location=SimulationConfig.DROP_OFF_LOCATION)
+    def __init__(self, engine: SimPySimulationEngine, location: tuple[float, float], capacity: int = 2):
+        super().__init__(engine, location=location)
+
+        # Capacity management: simpy Store with fixed number of "slots"
+        self.capacity = capacity
+        self.dump_slots = simpy.Store(engine.env, capacity)
+        # Initialize with available slots
+        for i in range(capacity):
+            self.dump_slots.put(i)
+
+        self.active_dumps: int = 0
+        self.total_dumps_completed: int = 0
 
         self.process: Process = engine.env.process(self.dump_loop())
 
@@ -422,17 +494,39 @@ class DumpSite(ResourceNode):
     def render(self) -> ResourceNodeRender:
         return {"color": "ys", "label": "Dump Site"}
 
-    def dump_loop(self) -> Generator[FilterStoreGet | Timeout, Resource, Never]:
-        # truck_specs = ResourceType.TRUCK.specs
+    def dump_loop(self):
+        truck_specs = ResourceType.TRUCK.specs
 
         while True:
             # 1. Get Resources from Inventory (Must be physically here)
             truck: Resource = yield self.inventory[ResourceType.TRUCK].get()
 
-            # 2. Take dirt
-            yield self.env.timeout(1)
+            # 2. Wait for an available dump slot (capacity constraint)
+            slot: int = yield self.dump_slots.get()
+            self.active_dumps += 1
 
-            # 4. Send Truck to free space
+            # 3. Process the dump with time variance
+            dump_time = truck_specs.get("dump_time", 10)  # Default 10 minutes
+
+            # Apply time variance from config if available
+            variance = 0.0
+            if hasattr(self.engine, "scenario_config"):
+                variance = getattr(self.engine.scenario_config, "time_variance", 0.0)
+
+            actual_dump_time = dump_time * random.uniform(1 - variance, 1 + variance)
+
+            # Consume fuel and add operating cost
+            truck.consume_fuel(actual_dump_time / 60)  # Convert to hours
+            truck.add_operating_cost(actual_dump_time / 60)
+
+            yield self.env.timeout(actual_dump_time)
+
+            # 4. Release the slot
+            self.dump_slots.put(slot)
+            self.active_dumps -= 1
+            self.total_dumps_completed += 1
+
+            # 5. Send Truck back to idle
             self.engine.idle_resources.transfer_resource(truck)
 
 
@@ -471,8 +565,14 @@ class Landslide(Disaster):
     dump_node: DumpSite
     process: simpy.Process
 
-    def __init__(self, engine: SimPySimulationEngine, size: float, dump_node: DumpSite):
-        super().__init__(engine)
+    def __init__(
+        self,
+        engine: SimPySimulationEngine,
+        size: float,
+        dump_node: DumpSite,
+        location: tuple[float, float] | None = None,
+    ):
+        super().__init__(engine, location)
 
         self.dirt = simpy.Container(engine.env, init=size)
         self.initial_size = size
@@ -488,6 +588,10 @@ class Landslide(Disaster):
     @override
     def percent_remaining(self):
         return self.dirt.level / self.initial_size
+
+    @override
+    def get_scale(self):
+        return self.dirt.level / self.engine.scenario_config.landslide_size_range[1]
 
     @property
     @override

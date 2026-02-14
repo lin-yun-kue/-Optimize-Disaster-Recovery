@@ -19,6 +19,11 @@ class Policy:
 
 
 def get_dist(r: Resource, node: ResourceNode):
+    """Get distance between resource and node, using GIS-aware distance if available."""
+    # Use engine's GIS-aware distance calculation if engine is available and has road graph
+    if hasattr(r, 'engine') and r.engine and r.engine.road_graph is not None:
+        return r.engine.get_distance(r, node)
+    # Fallback to Euclidean distance
     return math.hypot(r.location[0] - node.location[0], r.location[1] - node.location[1])
 
 
@@ -83,7 +88,7 @@ def get_partner_count(disaster: Disaster, resource: Resource) -> int:
 # ============================================================================
 
 
-def random_policy(resource: Resource, disasters: list[Disaster], env: simpy.Environment) -> Disaster:
+def random_policy(resource: Resource, disasters: list[Disaster], _env: simpy.Environment) -> Disaster:
     """
     Randomly assigns a resource to any available disaster.
     """
@@ -103,7 +108,7 @@ def random_policy(resource: Resource, disasters: list[Disaster], env: simpy.Envi
 # ============================================================================
 
 
-def first_priority_policy(resource: Resource, disasters: list[Disaster], env: simpy.Environment) -> Disaster:
+def first_priority_policy(_resource: Resource, disasters: list[Disaster], _env: simpy.Environment) -> Disaster:
     """
     Prioritizes the disaster with the MOST total resources currently assigned.
     """
@@ -124,7 +129,7 @@ def first_priority_policy(resource: Resource, disasters: list[Disaster], env: si
 # ============================================================================
 
 
-def split_excavator_policy(resource: Resource, disasters: list[Disaster], env: simpy.Environment) -> Disaster:
+def split_excavator_policy(resource: Resource, disasters: list[Disaster], _env: simpy.Environment) -> Disaster:
     """
     Evenly splits Excavators.
     Splits Trucks based on where Excavators are located.
@@ -156,7 +161,7 @@ def split_excavator_policy(resource: Resource, disasters: list[Disaster], env: s
 # ============================================================================
 
 
-def closest_neighbor_policy(resource: Resource, disasters: list[Disaster], env: simpy.Environment) -> Disaster:
+def closest_neighbor_policy(resource: Resource, disasters: list[Disaster], _env: simpy.Environment) -> Disaster:
     """
     Minimizes travel time.
     Trucks only go to the nearest site that actually has an Excavator.
@@ -176,7 +181,7 @@ def closest_neighbor_policy(resource: Resource, disasters: list[Disaster], env: 
 # ============================================================================
 
 
-def smallest_job_first_policy(resource: Resource, disasters: list[Disaster], env: simpy.Environment) -> Disaster:
+def smallest_job_first_policy(resource: Resource, disasters: list[Disaster], _env: simpy.Environment) -> Disaster:
     """
     Prioritizes the landslide with the least amount of dirt remaining.
     Clears disasters off the map one by one.
@@ -197,7 +202,7 @@ def smallest_job_first_policy(resource: Resource, disasters: list[Disaster], env
 # ============================================================================
 
 
-def balanced_ratio_policy(resource: Resource, disasters: list[Disaster], env: simpy.Environment) -> Disaster:
+def balanced_ratio_policy(resource: Resource, disasters: list[Disaster], _env: simpy.Environment) -> Disaster:
     """
     Attempts to maintain an ideal Truck-to-Excavator ratio to minimize queuing.
     """
@@ -208,7 +213,7 @@ def balanced_ratio_policy(resource: Resource, disasters: list[Disaster], env: si
 
     rt = resource.resource_type
 
-    def get_ratio_score(d):
+    def get_ratio_score(d: Disaster):
         # We want to go to the LOWEST score
 
         if rt == ResourceType.TRUCK:
@@ -245,7 +250,7 @@ def balanced_ratio_policy(resource: Resource, disasters: list[Disaster], env: si
 # ============================================================================
 
 
-def smart_split_policy(resource: Resource, disasters: list[Disaster], env: simpy.Environment) -> Disaster:
+def smart_split_policy(resource: Resource, disasters: list[Disaster], _env: simpy.Environment) -> Disaster:
     """
     - Heavy units split evenly.
     - Support units go where partners are.
@@ -259,7 +264,7 @@ def smart_split_policy(resource: Resource, disasters: list[Disaster], env: simpy
     rt = resource.resource_type
 
     # 1. Filter out "Already Solved" sites (Effective work <= 0)
-    viable_sites = []
+    viable_sites: list[Disaster] = []
     for d in candidates:
         severity = get_severity(d)
 
@@ -301,7 +306,7 @@ def smart_split_policy(resource: Resource, disasters: list[Disaster], env: simpy
 # ============================================================================
 
 
-def cost_function_policy(resource: Resource, disasters: list[Disaster], env: simpy.Environment) -> Disaster:
+def cost_function_policy(resource: Resource, disasters: list[Disaster], _env: simpy.Environment) -> Disaster:
     """
     Calculates Cost: Distance + Queue + Completion Penalty.
     """
@@ -309,7 +314,7 @@ def cost_function_policy(resource: Resource, disasters: list[Disaster], env: sim
     if not candidates:
         candidates = disasters
 
-    def calculate_score(d):
+    def calculate_score(d: Disaster):
         # 1. Drive Time
         dist = get_dist(resource, d)
         speed = resource.resource_type.specs["speed"]
@@ -338,7 +343,7 @@ def cost_function_policy(resource: Resource, disasters: list[Disaster], env: sim
 # ============================================================================
 
 
-def gravity_policy(resource: Resource, disasters: list[Disaster], env: simpy.Environment) -> Disaster:
+def gravity_policy(resource: Resource, disasters: list[Disaster], _env: simpy.Environment) -> Disaster:
     """
     High Pull = High Severity + High Priority.
     Low Pull = High Distance + High Queue.
@@ -347,7 +352,7 @@ def gravity_policy(resource: Resource, disasters: list[Disaster], env: simpy.Env
     if not candidates:
         candidates = disasters
 
-    def get_score(d):
+    def get_score(d: Disaster):
         # Numerator: Urgency
         severity = get_severity(d)
 
@@ -376,7 +381,7 @@ def gravity_policy(resource: Resource, disasters: list[Disaster], env: simpy.Env
 # ============================================================================
 
 
-def chain_gang_policy(resource: Resource, disasters: list[Disaster], env: simpy.Environment) -> Disaster:
+def chain_gang_policy(resource: Resource, disasters: list[Disaster], _env: simpy.Environment) -> Disaster:
     """
     Anchors (Exc/Fire) -> Largest Jobs.
     Runners (Truck/Amb) -> Closest Active Anchor.
@@ -479,7 +484,7 @@ def tournament_policy_func(resource: Resource, disasters: list[Disaster], env: s
         raise Exception("No policy was able to complete the simulation.")
 
     # Record winner
-    master_engine._tournament_decisions.append((env.now, best_result["policy"]))
+    master_engine.tournament_decisions.append((env.now, best_result["policy"]))
 
     # Find the disaster object in the Master's store that matches the ID
     target = [d for d in disasters if d.id == best_result["move_id"]][0]

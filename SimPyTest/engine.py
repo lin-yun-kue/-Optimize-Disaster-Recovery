@@ -2,17 +2,29 @@ from __future__ import annotations
 from simpy.events import Process
 import simpy
 import random
-from typing import Final, Never, TypeVar, TYPE_CHECKING
+from typing import TypeVar, TYPE_CHECKING
+import math
+
+try:
+    from typing import Never
+except ImportError:
+    # Python < 3.10 compatibility
+    from typing import NoReturn as Never
 from collections.abc import Generator
 import matplotlib.pyplot as plt
 from matplotlib.axes import Axes
 from matplotlib.figure import Figure
 from math import cos, sin
 from simpy.core import EmptySchedule
+
+from SimPyTest.gis_utils import CRS_UTM, get_road_distance
 from .simulation import *
+import networkx as nx
+from shapely.geometry import Point
 
 if TYPE_CHECKING:
     from .policies import Policy
+    from .gis_utils import GISConfig
 
 
 # ============================================================================
@@ -67,15 +79,19 @@ class SimulationRNG:
 @dataclass
 class ScenarioConfig:
     # Resource counts (can be a range for randomization)
-    num_trucks: int | tuple[int, int] = 50
-    num_excavators: int | tuple[int, int] = 10
+    num_trucks: int | tuple[int, int] = (15, 25)
+    num_excavators: int | tuple[int, int] = (8, 12)
 
     # Disaster counts
-    num_landslides: int | tuple[int, int] = (10, 10)
+    num_landslides: int | tuple[int, int] = (10, 15)
     landslide_size_range: tuple[int, int] = (150, 250)
 
     # Optional callback for manual placement: (engine) -> None
     custom_setup_fn: Callable[[SimPySimulationEngine], None] | None = None
+
+    # Optional GIS configuration
+    gis_config: GISConfig | None = None
+
 
 @dataclass
 class Record:
@@ -94,10 +110,6 @@ class Record:
     target_id: int
     policy: str
 
-
-
-
-
 # ============================================================================
 # MARK: Engine
 # ============================================================================
@@ -106,7 +118,7 @@ class SimPySimulationEngine:
     Simulation engine wrapper for your disaster-resource SimPy simulation.
     """
 
-    MAX_SIM_TIME: int = 20_000
+    MAX_SIM_TIME: int = 200_000
 
     def __init__(
         self,
@@ -133,12 +145,16 @@ class SimPySimulationEngine:
         # self.resources: List[Resource] = []
         self.resource_nodes: list[ResourceNode] = []
 
+        # GIS support
+        self.road_graph: nx.Graph[tuple[float, float]] | None = None
+        self.gis_config: GISConfig | None = scenario_config.gis_config if scenario_config else None
+
         # result tracking
         self._time_points: list[float] = []
         self._known_disasters: dict[int, Disaster] = {}
         self._disaster_histories: dict[int, list[float]] = {}
         self.non_idle_time: float = 0.0
-        self._tournament_decisions: list[tuple[float, str]] = []
+        self.tournament_decisions: list[tuple[float, str]] = []
 
         # replay
         self.decision_log: list[int] = []
@@ -155,7 +171,7 @@ class SimPySimulationEngine:
         self.fig: Figure | None = None
         self.axs: list[Axes] | None = None
 
-        print(f"Running {self.policy.name} with seed {self.seed}.")
+        # print(f"Running {self.policy.name} with seed {self.seed}.")
 
     # ----------------------------------------------------------------------------
     # MARK: Run Control
@@ -300,7 +316,17 @@ class SimPySimulationEngine:
     # ----------------------------------------------------------------------------
 
     def get_distance(self, r1: Resource, r2: ResourceNode) -> float:
-        return math.hypot(r1.location[0] - r2.location[0], r1.location[1] - r2.location[1])
+        """Calculate distance between a resource and a resource node."""
+
+        if self.road_graph is not None:
+            dist = get_road_distance(self.road_graph, r1.location, r2.location, self.gis_config)
+            if dist == float("inf"):
+                print(f"No path from {r1.location} to {r2.location}")
+                # Fallback to Euclidean if no path found
+                return math.hypot(r1.location[0] - r2.location[0], r1.location[1] - r2.location[1])
+            return dist
+        else:
+            return math.hypot(r1.location[0] - r2.location[0], r1.location[1] - r2.location[1])
 
     # ----------------------------------------------------------------------------
     # MARK: Disaster Generator
@@ -315,8 +341,28 @@ class SimPySimulationEngine:
         num_to_spawn = get_count(self.scenario_config.num_landslides)
         low, high = self.scenario_config.landslide_size_range
 
-        for _ in range(num_to_spawn):
-            landslide = Landslide(self, self.rng.randint(low, high), dump_site)
+        # Generate landslide locations
+        locations: list[tuple[float, float]] = []
+        if self.gis_config is not None and self.gis_config.roads_gdf is not None and self.road_graph is not None:
+            # Sample road locations
+            sampled = self.gis_config.roads_gdf.sample(n=num_to_spawn, random_state=self.seed)
+            sampled = sampled.to_crs(CRS_UTM)
+            centroids = sampled.geometry.centroid
+
+            # Use spatial index for O(log N) nearest node queries
+            spatial_index = self.gis_config.get_spatial_index()
+
+            for centroid in centroids:
+                # Snap to nearest road graph node using R-tree
+                x, y = centroid.x, centroid.y
+                node = spatial_index.get_nearest_node(x, y)
+                locations.append(node)
+        else:
+            # Random locations in default area
+            locations = [(self.rng.randint(-100, 100), self.rng.randint(-100, 100)) for _ in range(num_to_spawn)]
+
+        for loc in locations:
+            landslide = Landslide(self, self.rng.randint(low, high), dump_site, location=loc)
             self.disaster_store.put(landslide)
 
             # Optional: Add a small delay between spawns
@@ -325,11 +371,29 @@ class SimPySimulationEngine:
     def initialize_world(self):
         """Initialize the world with a randomized set of resources."""
 
+        # Load GIS data if configured
+        if self.gis_config is not None:
+            self.road_graph = self.gis_config.load_road_network()
+
         if self.scenario_config.custom_setup_fn:
             self.scenario_config.custom_setup_fn(self)
         else:
-            depot = Depot(self)
-            dump_site = DumpSite(self)
+            # Determine depot and dump site locations
+            depot_loc = (0, 0)
+            dump_loc = (0, 0)
+
+            if self.gis_config is not None and len(self.gis_config.depots) > 0:
+                depot = self.gis_config.depots[0]
+                if "x" in depot and "y" in depot:
+                    depot_loc = (depot["x"], depot["y"])
+
+            if self.gis_config is not None and len(self.gis_config.landfills) > 0:
+                landfill = self.gis_config.landfills[0]
+                if "x" in landfill and "y" in landfill:
+                    dump_loc = (landfill["x"], landfill["y"])
+
+            depot = Depot(self, depot_loc)
+            dump_site = DumpSite(self, dump_loc)
 
             self.resource_nodes.append(depot)
             self.resource_nodes.append(dump_site)
@@ -346,7 +410,7 @@ class SimPySimulationEngine:
             for r_type, count in spawn_plan:
                 for _ in range(count):
                     r = Resource(rid, r_type, self)
-                    depot.transfer_resource(r)
+                    depot.transfer_resource(r, True)
                     rid += 1
 
     # ----------------------------------------------------------------------------

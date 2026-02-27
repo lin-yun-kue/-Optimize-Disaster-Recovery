@@ -24,6 +24,10 @@ class ObsType(TypedDict):
     valid_actions: npt.NDArray[np.int8]  # Shape: (max_slots,)
     idle_trucks: tuple[float]  # Number of idle trucks normalized
     idle_excavators: tuple[float]  # Number of idle excavators normalized
+    season: tuple[int]  # Current season (0=winter, 1=spring, 2=summer, 3=fall)
+    weather_factor: tuple[float]  # Current weather modifier for disasters
+    budget_utilization: tuple[float]  # Budget spent / budget total (0-1)
+    avg_response_time: tuple[float]  # Average response time for resolved disasters
     # avg_disaster_progress: float  # Average progress across all disasters
 
 
@@ -35,6 +39,12 @@ SortOptions = Literal["nearest", "furthest", "random", "most_progress", "least_p
 class InfoType(TypedDict):
     sim_time: float
     active_disasters: int
+    season: str
+    weather_factor: float
+    calendar_date: str | None
+    budget_spent: float
+    budget_remaining: float
+    budget_utilization: float
 
 
 class DisasterResponseEnv(gym.Env[ObsType, ActType]):
@@ -86,6 +96,13 @@ class DisasterResponseEnv(gym.Env[ObsType, ActType]):
                     "valid_actions": spaces.Box(low=0, high=1, shape=(self.max_slots,), dtype=np.int8),
                     "idle_trucks": spaces.Box(low=0, high=1, shape=(1,), dtype=np.float32),
                     "idle_excavators": spaces.Box(low=0, high=1, shape=(1,), dtype=np.float32),
+                    # Seasonal features: season (4 categories), weather factor (0-1)
+                    "season": spaces.Box(low=0, high=3, shape=(1,), dtype=np.int8),  # 0-3 for 4 seasons
+                    "weather_factor": spaces.Box(low=0, high=1, shape=(1,), dtype=np.float32),
+                    # Budget features: budget utilization (0-1)
+                    "budget_utilization": spaces.Box(low=0, high=1, shape=(1,), dtype=np.float32),
+                    # Metrics: avg response time
+                    "avg_response_time": spaces.Box(low=0, high=10000, shape=(1,), dtype=np.float32),
                     # "avg_disaster_progress": spaces.Box(low=0, high=1, shape=(), dtype=np.float32),
                 }
             ),
@@ -99,6 +116,8 @@ class DisasterResponseEnv(gym.Env[ObsType, ActType]):
         self.current_resource: Resource | None = None
         self.current_action: int | None = None
         self.decision_needed: bool = False
+
+        self._prev_dirt_total: float | None = None
 
     def _get_obs(self) -> ObsType:
         """Constructs the observation vector from simulation state."""
@@ -181,12 +200,29 @@ class DisasterResponseEnv(gym.Env[ObsType, ActType]):
         idle_trucks_norm = min(idle_trucks / max_trucks, 1.0) if max_trucks > 0 else 0.0
         idle_excavators_norm = min(idle_excavators / max_excavators, 1.0) if max_excavators > 0 else 0.0
 
-        # Calculate average disaster progress
-        all_disasters = self.engine.disaster_store.items
-        if len(all_disasters) > 0:
-            avg_progress = sum(d.percent_remaining() for d in all_disasters) / len(all_disasters)
-        else:
-            avg_progress = 0.0
+        # Get seasonal features from calendar if available
+        season_value = 0
+        weather_factor = 0.0
+        if self.engine.calendar is not None:
+            from .calendar import Season
+
+            season = self.engine.calendar.get_season()
+            season_map = {Season.WINTER: 0, Season.SPRING: 1, Season.SUMMER: 2, Season.FALL: 3}
+            season_value = season_map.get(season, 0)
+            # Get average weather factor for different disaster types
+            weather_factor = (
+                self.engine.calendar.get_weather_factor("landslide")
+                + self.engine.calendar.get_weather_factor("snow")
+                + self.engine.calendar.get_weather_factor("flood")
+            ) / 3.0
+
+        # Get budget utilization
+        budget_utilization = 0.0
+        avg_response_time = 0.0
+        if self.engine.scenario_config.track_costs:
+            summary = self.engine.get_summary()
+            budget_utilization = summary.get("budget_utilization", 0.0)
+            avg_response_time = summary.get("avg_response_time", 0.0)
 
         return {
             "current_resource_type": self.current_resource.resource_type.value,
@@ -194,13 +230,45 @@ class DisasterResponseEnv(gym.Env[ObsType, ActType]):
             "valid_actions": valid_actions,
             "idle_trucks": (float(idle_trucks_norm),),
             "idle_excavators": (float(idle_excavators_norm),),
+            "season": (int(season_value),),
+            "weather_factor": (float(weather_factor),),
+            "budget_utilization": (float(budget_utilization),),
+            "avg_response_time": (float(avg_response_time),),
             # "avg_disaster_progress": float(avg_progress),
         }
 
     def _get_info(self) -> InfoType:
+        season_str = "unknown"
+        weather_factor = 0.0
+        calendar_date = None
+        budget_spent = 0.0
+        budget_remaining = 0.0
+        budget_utilization = 0.0
+
+        if self.engine is not None:
+            if self.engine.calendar is not None:
+                from .calendar import Season
+
+                season = self.engine.calendar.get_season()
+                season_str = season.name.lower()
+                weather_factor = self.engine.calendar.get_weather_factor("landslide")
+                calendar_date = str(self.engine.calendar)
+
+            if self.engine.scenario_config.track_costs:
+                summary = self.engine.get_summary()
+                budget_spent = summary.get("total_spent", 0.0)
+                budget_remaining = summary.get("budget_remaining", 0.0)
+                budget_utilization = summary.get("budget_utilization", 0.0)
+
         return {
             "sim_time": self.engine.env.now if self.engine else 0,
             "active_disasters": len(self.engine.disaster_store.items) if self.engine else 0,
+            "season": season_str,
+            "weather_factor": weather_factor,
+            "calendar_date": calendar_date,
+            "budget_spent": budget_spent,
+            "budget_remaining": budget_remaining,
+            "budget_utilization": budget_utilization,
         }
 
     def _calculate_reward(
@@ -312,7 +380,7 @@ class DisasterResponseEnv(gym.Env[ObsType, ActType]):
         self.current_resource = None
         self.decision_needed = False
         self.visible_disaster_mapping = {}
-        self._prev_dirt_total = None
+        self._prev_dirt_total = None  # Initialize dirt tracking for rewards
 
         self.engine.run_in_gym(self.loop)
 
@@ -381,6 +449,10 @@ class DisasterResponseEnv(gym.Env[ObsType, ActType]):
                 "valid_actions": np.zeros(self.max_slots, dtype=np.int8),
                 "idle_trucks": (0.0,),
                 "idle_excavators": (0.0,),
+                "season": (0,),
+                "weather_factor": (0.0,),
+                "budget_utilization": (0.0,),
+                "avg_response_time": (0.0,),
             }
         else:
             obs = self._get_obs()
@@ -437,8 +509,9 @@ class DisasterResponseEnv(gym.Env[ObsType, ActType]):
             self.current_action = None
 
     def update_scenario_config(self, new_config: ScenarioConfig):
-        """Update the scenario configuration for curriculum learning. This will take effect on next reset()"""
+        """Update the scenario configuration for curriculum learning."""
         self.scenario_config = new_config
+        # Note: This will take effect on next reset()
         print(f"Environment scenario config updated to: {new_config}")
 
     def update_max_visible_disasters(self, new_max: int):

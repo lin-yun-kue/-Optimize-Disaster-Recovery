@@ -48,6 +48,7 @@ def set_tournament_candidate_policies(policy_names: list[str] | None):
     """
     global TOURNAMENT_POLICY_WHITELIST
     TOURNAMENT_POLICY_WHITELIST = set(policy_names) if policy_names is not None else None
+import itertools
 
 
 @dataclass
@@ -1120,47 +1121,204 @@ def budget_aware_policy(resource: Resource, disasters: list[Disaster], _env: sim
 
     engine = resource.engine
 
-    # Get current budget utilization
-    budget_util = 0.0
-    budget_exhausted = False
-    if hasattr(engine, "scenario_config") and engine.scenario_config.track_costs:
-        summary = engine.get_summary()
-        budget_util = summary.get("budget_utilization", 0.0)
-        budget_exhausted = summary.get("budget_exhausted", False)
+    # Get current history from Master
+    current_history = list(master_engine.decision_log)
+    master_seed = master_engine.seed
 
-    def get_adjusted_priority(d: Disaster) -> float:
-        """Adjust priority based on budget situation."""
-        severity = get_severity(d)
+    candidates = [p for p in POLICIES if p.name not in policy_switch_exclude]
 
-        # If budget is exhausted, skip low-severity disasters
-        if budget_exhausted:
-            # Only respond to high-severity disasters
-            if severity < 0.7:
-                return float("inf")  # Skip these
-            return severity * 0.5  # Deprioritize everything when exhausted
+    k=1
+    tasks = []
+    for first in candidates:
+        for rest in candidates:
+            tasks.append((first, rest, k, master_seed, current_history))
 
-        # If budget is running low (>80%), prioritize small jobs
-        if budget_util > 0.8:
-            # Heavily favor small jobs
-            return severity * 2
-        elif budget_util > 0.5:
-            # Moderately favor small jobs
-            return severity * 1.5
+
+    with multiprocessing.Pool(processes=len(candidates)) as pool:
+        results = pool.starmap(evaluate_policy_worker_switch, tasks)
+
+    best_result = None
+    min_time = float("inf")
+    time_scores = {}
+
+    for result in results:
+        if result["success"]:
+            move_id = result["move_id"]
+            new_time = result["time"]
+            if move_id not in time_scores or new_time < time_scores[move_id]:
+                time_scores[move_id] = new_time
+            
+        if result["success"] and result["time"] < min_time:
+            min_time = result["time"]
+            best_result = result
+
+
+    if best_result is None:
+        raise Exception("No policy was able to complete the simulation.")
+
+    # Record winner
+    master_engine.tournament_decisions.append((env.now, best_result["policy"]))
+
+    # Find the disaster object in the Master's store that matches the ID
+    target = [d for d in disasters if d.id == best_result["move_id"]][0]
+
+    record_decision(resource, disasters, best_result, min_time, time_scores)
+
+    return target
+
+# ============================================================================
+# MARK: MultiSwitchPolicy
+# ============================================================================
+
+class MultiSwitchPolicy:
+    """
+    First N decisions follow prefix_policies in order, then always use tail_policy.
+
+    prefix_policies=[A,B], tail_policy=C
+      => A => B => C => C => ...
+    """
+    def __init__(self, prefix_policies: List["Policy"], tail_policy: "Policy"):
+        if len(prefix_policies) == 0:
+            raise ValueError("prefix_policies must be non-empty")
+        self.prefix_policies = prefix_policies
+        self.tail_policy = tail_policy
+
+        self.name = "switch(" + "->".join([p.name for p in prefix_policies] + [tail_policy.name + "..."]) + ")"
+
+        self._decision_count = 0
+        self.first_move_id: Optional[int] = None
+        self.func = self._func
+
+    def reset(self):
+        self._decision_count = 0
+        self.first_move_id = None
+
+    def _func(self, resource, disasters, env):
+        self._decision_count += 1
+        idx = self._decision_count - 1  # 0-based
+
+        if idx < len(self.prefix_policies):
+            chosen = self.prefix_policies[idx].func(resource, disasters, env)
         else:
-            # Normal priority
-            return severity
+            chosen = self.tail_policy.func(resource, disasters, env)
 
-    sorted_candidates = sorted(candidates, key=get_adjusted_priority)
+        if self._decision_count == 1:
+            self.first_move_id = chosen.id
 
-    # If budget is exhausted, skip first candidate if it was marked to skip
-    if budget_exhausted:
-        for d in sorted_candidates:
-            if get_severity(d) >= 0.7:
-                return d
-        return None  # No disasters worth responding to
+        return chosen
 
-    return sorted_candidates[0]
 
+def evaluate_multipolicy_worker_switch(permutation: Policy, seed: int, history: list[int]) -> PolicyResult:
+    try:
+        # 1) use wrapper policy 
+        multi_policy = MultiSwitchPolicy(permutation[:-1], permutation[-1])
+
+        # 2) Create Fresh Engine
+        sim_fork = SimPySimulationEngine(multi_policy, seed, live_plot=False)
+        sim_fork.initialize_world()
+
+        # 3) Load History for Replay
+        sim_fork.replay_buffer = list(history)
+
+        # 4) Run to completion
+        success = sim_fork.run()
+
+        time_taken = sim_fork.get_summary()["non_idle_time"]
+
+        # The move_id of the first decision after the divergence (K=1 is the “next step” you’re looking for).
+        move_id = multi_policy.first_move_id
+
+        # 保底：如果你想兼容 engine 的 branch_decision 行為，也可以 fallback
+        if move_id is None:
+            move_id = sim_fork.branch_decision
+
+        return {
+            "success": success,
+            "time": time_taken,
+            "policy": multi_policy.name,
+            "move_id": move_id,
+        }
+    except Exception as e:
+        print(f"Exception: {e}")
+        raise
+
+def multi_policy_func(resource: Resource, disasters: list[Disaster], env: simpy.Environment) -> Disaster:
+    """
+    The Meta-Policy (Replay Version).
+    1. Instantiate N new simulation engines (one per candidate policy).
+    2. Feed them the `decision_log` from the Master simulation.
+    3. Run them. They will fast-forward replay history, then switch to candidate policy.
+    4. Compare completion times.
+    5. Extract the specific move the winner made at the branching point.
+    """
+    master_engine = resource.engine
+
+    # Get current history from Master
+    current_history = list(master_engine.decision_log)
+    master_seed = master_engine.seed
+
+    candidates = [p for p in POLICIES if p.name not in policy_switch_exclude]
+
+    prefix_len = 3
+    tasks = []
+    for pemutation in itertools.permutations(candidates, r=prefix_len):
+        tasks.append((list(pemutation), master_seed, current_history))
+
+
+
+    with multiprocessing.Pool(processes=len(candidates)) as pool:
+        results = pool.starmap(evaluate_multipolicy_worker_switch, tasks)
+
+    best_result = None
+    min_time = float("inf")
+
+    for result in results:
+        if result["success"] and result["time"] < min_time:
+            min_time = result["time"]
+            best_result = result
+
+    if best_result is None:
+        raise Exception("No policy was able to complete the simulation.")
+
+    # Record winner
+    master_engine.tournament_decisions.append((env.now, best_result["policy"]))
+
+    # Find the disaster object in the Master's store that matches the ID
+    target = [d for d in disasters if d.id == best_result["move_id"]][0]
+
+    record_decision(resource, disasters, best_result, min_time)
+
+    return target
+
+# ============================================================================
+# MARK: Record_decision
+# ============================================================================
+def record_decision(resource: Resource, disasters: list[Disaster], best_result, min_time, time_scores):
+    master_engine = resource.engine
+
+    # Record status and policy
+    r_landslide = {
+        "id": [d.id for d in disasters],
+        "onehot_index": [d.one_hot_index for d in disasters],
+        "remainging": [d.percent_remaining() for d in disasters],
+        "remain_size": [d.dirt.level for d in disasters],
+        "locations": [d.location for d in disasters],
+        "truck": [len(d.roster[ResourceType.TRUCK]) for d in disasters],
+        "excavators": [len(d.roster[ResourceType.EXCAVATOR]) for d in disasters]
+    }
+
+    record = {
+        "resource_type": resource.resource_type.value,
+        "prev_location": resource.prev_location,
+        "disaster_info":{
+            "landslide": r_landslide
+        },
+        "time_score": time_scores,
+        "target_id": best_result["move_id"],
+        "time": min_time,
+        "policy": best_result["policy"]
+    }
+    master_engine.records.append(record)
 
 def resource_efficiency_policy(resource: Resource, disasters: list[Disaster], _env: simpy.Environment) -> Disaster:
     """
@@ -1201,6 +1359,7 @@ def resource_efficiency_policy(resource: Resource, disasters: list[Disaster], _e
 # MARK: Policy Map
 # ============================================================================
 
+policy_switch_exclude = ["random", "tournament", "k-tournament", "multi-policy"]
 
 POLICIES: list[Policy] = [
     # Policy("random", random_policy),
@@ -1223,4 +1382,5 @@ POLICIES: list[Policy] = [
     Policy("population_impact", population_impact_policy),
     Policy("budget_aware", budget_aware_policy),
     Policy("resource_efficiency", resource_efficiency_policy),
+    # Policy("multi-policy", multi_policy_func),
 ]

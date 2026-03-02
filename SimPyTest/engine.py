@@ -248,7 +248,7 @@ class SimPySimulationEngine:
         self._gis_edge_segments: list[tuple[tuple[float, float], tuple[float, float]]] | None = None
         self._gis_bounds: tuple[float, float, float, float] | None = None
 
-        # print(f"Running {self.policy.name} with seed {self.seed}.")
+        print(f"Running {self.policy.name} with seed {self.seed}.")
 
     # ----------------------------------------------------------------------------
     # MARK: Run Control

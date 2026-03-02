@@ -34,6 +34,7 @@ if __name__ == "__main__":
 
     # Store results as: {"policy_name": {"success": [times...], "fail": count}}
     aggregated_results: defaultdict[str, PolicyResult] = defaultdict(lambda: {"success": [], "fail": 0})
+    records: list[dict[str, Any]] = []
 
     from .policies import POLICIES
 
@@ -55,6 +56,7 @@ if __name__ == "__main__":
         else:
             for policy in POLICIES:
                 if policy.name == "tournament":
+                # if policy.name == "tournament" or policy.name == "k-tournament" or policy.name == "multi-policy":
                     continue
                 engine = SimPySimulationEngine(policy=policy, seed=seed, live_plot=args.live)
                 engine.initialize_world()
@@ -68,6 +70,7 @@ if __name__ == "__main__":
 
                 print(f"Completed {policy.name} in {duration} seconds.")
 
+        print(aggregated_results)
         print(f"\n--- END OF SEED {seed}  ---\n")
 
     print("\n" + "=" * 85)
@@ -107,3 +110,6 @@ if __name__ == "__main__":
 
         print(f"{name:<20} | {rate:<9.1f}% | {avg_str:<10} | {stdev_str:<10} | {mn_str:<8} | {mx_str:<8}")
     print("=" * 85 + "\n")
+
+    with open("records.json", "w", encoding="utf-8") as f:
+        json.dump(records, f, indent=4, ensure_ascii=False)

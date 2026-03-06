@@ -18,9 +18,9 @@ class DisasterMetrics(TypedDict):
     end_time: float | None
     response_time: float  # Time from creation to first resource arrival
     resolution_time: float  # Time from creation to resolution
-    total_cost: float
+    total_cost: float #not implement
     resources_used: int
-    population_affected: int
+    population_affected: int #not implement
     road_miles_affected: float
 
 

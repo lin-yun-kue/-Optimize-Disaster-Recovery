@@ -277,7 +277,7 @@ def evaluate(model, dataloader, device="cpu"):
 # MAIN：80/20 split data
 # =========================
 if __name__ == "__main__":
-    dataset_path = "records.json"
+    dataset_path = "records0.json"
     raw_data = load_jsonl(dataset_path)
     print(f"Loaded {len(raw_data)} records")
     # print(raw_data[0])

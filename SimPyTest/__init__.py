@@ -1,4 +1,5 @@
-from .engine import SimPySimulationEngine, ScenarioConfig
+from .engine import SimPySimulationEngine
+from .scenario_types import ScenarioConfig
 from .simulation import *
 from .gym import *
 from .gis_utils import GISConfig, load_roads, build_road_graph, get_road_distance

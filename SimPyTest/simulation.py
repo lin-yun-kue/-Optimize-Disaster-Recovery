@@ -13,16 +13,16 @@ except ImportError:
     from typing import NoReturn as Never
 
 import simpy
-from simpy.events import AllOf, AnyOf, Process
+from simpy.events import AllOf, AnyOf, Event, Process
 from simpy.resources.container import ContainerGet
 from simpy.resources.store import FilterStoreGet, StorePut
 from typing_extensions import override
 
 from SimPyTest.real_world_params import travel_minutes_from_distance
-from SimPyTest.multi_year_config import ResourceClass, get_default_resource_costs
 
 if TYPE_CHECKING:
-    from .engine import ScenarioConfig, SimPySimulationEngine, SimulationRNG
+    from SimPyTest.scenario_types import ScenarioConfig
+    from .engine import SimPySimulationEngine, SimulationRNG
     from .calendar import Season
     from typing import Optional
 
@@ -41,23 +41,23 @@ class ResourceRender(TypedDict):
 class ResourceType(Enum):
     TRUCK = (
         0,
-        {"speed": 23.4, "capacity": 10, "load_time": 10, "dump_time": 10},
+        {"speed": 23.4, "capacity": 10, "load_time": 10, "dump_time": 10, "hourly_operating_cost": 75.0, "fuel_per_hour": 5.0},
         ResourceRender({"marker": "^", "color": "blue"}),
     )
     EXCAVATOR = (
         1,
-        {"speed": 11.6, "work_rate": 10},
+        {"speed": 11.6, "work_rate": 10, "hourly_operating_cost": 150.0, "fuel_per_hour": 8.0},
         ResourceRender({"marker": "P", "color": "orange"}),
     )
     SNOWPLOW = (
         2,
-        {"speed": 15.0, "work_rate": 5},
+        {"speed": 15.0, "work_rate": 5, "hourly_operating_cost": 100.0, "fuel_per_hour": 6.0},
         ResourceRender({"marker": "s", "color": "cyan"}),
     )
     ASSESSMENT_VEHICLE = (
         3,
-        {"speed": 35.0, "work_rate": 1},
-        ResourceRender({"marker": "A", "color": "purple"}),
+        {"speed": 35.0, "work_rate": 1, "hourly_operating_cost": 60.0, "fuel_per_hour": 3.5},
+        ResourceRender({"marker": "D", "color": "purple"}),
     )
     # FIRE_TRUCK = (
     #     auto(),
@@ -114,23 +114,13 @@ class Resource:
 
     def __post_init__(self):
         self.assigned_node = self.engine.idle_resources
-        costs = get_default_resource_costs()
-        class_map = {
-            ResourceType.TRUCK: ResourceClass.TRUCK,
-            ResourceType.EXCAVATOR: ResourceClass.EXCAVATOR,
-            ResourceType.SNOWPLOW: ResourceClass.SNOWPLOW,
-            ResourceType.ASSESSMENT_VEHICLE: ResourceClass.ASSESSMENT_VEHICLE,
-        }
-        rc = class_map.get(self.resource_type)
-        if rc is not None and rc in costs:
-            cfg = costs[rc]
-            self.hourly_operating_cost = float(cfg.hourly_operating)
-            self.fuel_consumption_rate = float(cfg.fuel_per_hour)
+        self.hourly_operating_cost = float(self.resource_type.specs.get("hourly_operating_cost", self.hourly_operating_cost))
+        self.fuel_consumption_rate = float(self.resource_type.specs.get("fuel_per_hour", self.fuel_consumption_rate))
 
     def consume_fuel(self, hours: float) -> float:
         """Consume fuel for given hours of operation. Returns fuel consumed."""
         # Apply time variance from config if available
-        variance = self.engine.scenario_config.time_variance
+        variance = self.engine.scenario_config.operational_priors.time_variance
 
         actual_consumption = self.fuel_consumption_rate * hours * self.engine.rng.uniform(1 - variance, 1 + variance)
         self.fuel_level = max(0, self.fuel_level - actual_consumption)
@@ -142,9 +132,8 @@ class Resource:
         self.accumulated_cost += cost
         self.total_hours_operated += hours
 
-        # Also update engine's total spent if tracking enabled
-        if self.engine.scenario_config.track_costs:
-            self.engine.total_spent += cost
+        # Cost is always tracked in core mode.
+        self.engine.total_spent += cost
 
         self.engine.metrics.record_resource_metrics(
             resource_id=self.id,
@@ -166,6 +155,19 @@ class Resource:
     def refuel_amount(self, gallons: float) -> None:
         """Add specific amount of fuel."""
         self.fuel_level = min(self.fuel_capacity, self.fuel_level + gallons)
+
+    def record_operating_minutes(self, minutes: float) -> None:
+        if minutes <= 0:
+            return
+        hours = minutes / 60.0
+        self.consume_fuel(hours)
+        self.add_operating_cost(hours)
+
+    def record_drive_minutes(self, minutes: float) -> None:
+        if minutes <= 0:
+            return
+        self.engine.total_drive_time += minutes
+        self.record_operating_minutes(minutes)
 
     @property
     def location(self) -> tuple[float, float]:
@@ -307,6 +309,8 @@ class ResourceNode(ABC):
         try:
             yield self.env.timeout(travel_time_minutes)
         except simpy.Interrupt as _e:
+            elapsed_minutes = max(0.0, self.env.now - resource.move_start_time)
+            resource.record_drive_minutes(elapsed_minutes)
             loc1 = resource.location
             loc2 = resource.prev_location
 
@@ -328,6 +332,7 @@ class ResourceNode(ABC):
             resource.move_time = 0
             return
 
+        resource.record_drive_minutes(travel_time_minutes)
         self.mark_resource_available(resource)
         resource.drive_process = None
 
@@ -382,18 +387,19 @@ class Disaster(ResourceNode, ABC):
         self.closure_type: str = "unspecified"
         self.evidence_tier: str = "tier_d"
         self.severity_index: float = 0.5
+        self.vulnerability_index: float = 1.0
         self.detection_delay_minutes: float = 0.0
         self.assessment_minutes_estimate: float = 0.0
         self.admin_reopen_delay_minutes: float = 0.0
         self.estimated_total_closure_minutes: float = 0.0
         self.sampled_closure_duration_hours: float = 0.0
+        self.dispatch_delay_applied: bool = False
         self.start_timestamp_calendar: str | None = None
-        if self.engine.calendar is not None:
-            self.start_timestamp_calendar = self.engine.calendar.current_date.isoformat()
+        self.start_timestamp_calendar = self.engine.calendar.current_date.isoformat()
 
     def apply_operational_prior(self, prior_key: str, baseline_closure_minutes: float) -> None:
         """Attach disaster timing/category priors from scenario configuration."""
-        priors = self.engine.scenario_config.disaster_operational_priors
+        priors = self.engine.scenario_config.operational_priors.disaster_operational_priors
         prior = priors.get(prior_key, {})
 
         self.cause_category = str(prior.get("cause_category", "unknown"))
@@ -418,33 +424,24 @@ class Disaster(ResourceNode, ABC):
 
         self.estimated_total_closure_minutes = max(
             0.0,
-            baseline_closure_minutes
-            + self.detection_delay_minutes
-            + self.assessment_minutes_estimate
-            + self.admin_reopen_delay_minutes,
+            baseline_closure_minutes + self.detection_delay_minutes + self.assessment_minutes_estimate + self.admin_reopen_delay_minutes,
         )
 
     def apply_closure_duration_prior(
         self,
         prior_key: str,
-        season: "Season" | None,
         min_hours: float = 0.5,
         max_hours: float = 24.0 * 21,
     ) -> float:
-        """Sample heavy-tailed closure duration prior for this disaster."""
-        prior_cfg = self.engine.scenario_config.disaster_closure_lognormal_priors.get(prior_key, {})
-        season_key = season.name.lower() if season is not None else "default"
-        prior = prior_cfg.get(season_key, prior_cfg.get("default"))
-        if prior is None:
-            sampled = min_hours
-        else:
-            mu, sigma = prior
-            sampled = self.engine.rng.lognormvariate(mu, sigma)
-        sampled = max(min_hours, min(max_hours, sampled))
-        self.sampled_closure_duration_hours = float(sampled)
-        self.estimated_total_closure_minutes = max(
-            self.estimated_total_closure_minutes, self.sampled_closure_duration_hours * 60.0
+        """Sample closure-duration metadata from simple per-disaster minute ranges."""
+        minutes_low, minutes_high = self.engine.scenario_config.operational_priors.closure_minutes_range_by_disaster.get(
+            prior_key,
+            (min_hours * 60.0, max_hours * 60.0),
         )
+        sampled_minutes = self.engine.rng.uniform(float(minutes_low), float(minutes_high))
+        sampled = max(min_hours, min(max_hours, sampled_minutes / 60.0))
+        self.sampled_closure_duration_hours = sampled
+        self.estimated_total_closure_minutes = max(self.estimated_total_closure_minutes, self.sampled_closure_duration_hours * 60.0)
         return self.sampled_closure_duration_hours
 
     @abstractmethod
@@ -516,38 +513,6 @@ class Disaster(ResourceNode, ABC):
                 self.engine.idle_resources.transfer_resource(store.pop())
 
     @classmethod
-    def pick_size_bucket(
-        cls,
-        rng: "SimulationRNG",
-        available_buckets: list[str],
-        scenario_config: "ScenarioConfig",
-    ) -> str:
-        """Pick a size bucket using class defaults with optional scenario overrides."""
-        if not available_buckets:
-            raise ValueError("available_buckets must not be empty")
-
-        if cls.disaster_type is None:
-            return rng.choice(available_buckets)
-
-        override_weights = scenario_config.seasonal_size_bucket_weights.get(cls.disaster_type, {})
-        weights = override_weights or cls.seasonal_size_weights
-        if not weights:
-            return rng.choice(available_buckets)
-
-        valid = [(bucket, weight) for bucket, weight in weights.items() if bucket in available_buckets and weight > 0]
-        total_weight = sum(weight for _, weight in valid)
-        if total_weight <= 0:
-            return rng.choice(available_buckets)
-
-        pick = rng.random() * total_weight
-        cumulative = 0.0
-        for bucket, weight in valid:
-            cumulative += weight
-            if pick <= cumulative:
-                return bucket
-        return rng.choice(available_buckets)
-
-    @classmethod
     def spawn_from_seasonal(
         cls,
         engine: "SimPySimulationEngine",
@@ -567,6 +532,8 @@ class Disaster(ResourceNode, ABC):
 class IdleResources(ResourceNode):
     def __init__(self, engine: SimPySimulationEngine):
         super().__init__(engine, location=(0, -10))
+        self.cooldown_until: dict[int, float] = {}
+        self._cooldown_processes: dict[int, Process] = {}
 
     @property
     @override
@@ -582,6 +549,58 @@ class IdleResources(ResourceNode):
         yield self.env.timeout(0)
 
         self.mark_resource_available(resource)
+
+    @override
+    def mark_resource_available(self, resource: Resource):
+        cooldown_end = self.cooldown_until.get(resource.id)
+        if cooldown_end is not None and cooldown_end > self.env.now:
+            return
+
+        self.cooldown_until.pop(resource.id, None)
+        self._cooldown_processes.pop(resource.id, None)
+        super().mark_resource_available(resource)
+
+    def hold_resource(self, resource: Resource, duration_minutes: float) -> None:
+        hold_duration = max(0.0, float(duration_minutes))
+        cooldown_end = self.env.now + hold_duration
+        self.cooldown_until[resource.id] = cooldown_end
+
+        existing = self._cooldown_processes.get(resource.id)
+        if existing is not None and not existing.triggered:
+            existing.interrupt("hold_reset")
+
+        if resource.assigned_node and resource in resource.assigned_node.roster[resource.resource_type]:
+            resource.assigned_node.roster[resource.resource_type].remove(resource)
+
+        resource.assigned_node = self
+        self.roster[resource.resource_type].add(resource)
+        self._cooldown_processes[resource.id] = self.env.process(self._release_after_cooldown(resource, cooldown_end))
+
+    def _release_after_cooldown(self, resource: Resource, cooldown_end: float):
+        while True:
+            remaining = cooldown_end - self.env.now
+            if remaining <= 0:
+                break
+            try:
+                yield self.env.timeout(remaining)
+            except simpy.Interrupt:
+                cooldown_end = self.cooldown_until.get(resource.id, self.env.now)
+                continue
+
+        if self.cooldown_until.get(resource.id) != cooldown_end:
+            return
+        self.mark_resource_available(resource)
+
+    def count_held_resources(self, resource_type: ResourceType | None = None) -> int:
+        held_ids = {resource_id for resource_id, end_time in self.cooldown_until.items() if end_time > self.env.now}
+        if resource_type is None:
+            return len(held_ids)
+
+        count = 0
+        for resource in self.roster[resource_type]:
+            if resource.id in held_ids:
+                count += 1
+        return count
 
     def get_any_resource(self) -> Generator[AnyOf, Resource, Resource]:
         """Returns a random resource from any of the stores."""
@@ -600,6 +619,32 @@ class IdleResources(ResourceNode):
             if event.triggered:
                 unused_resource = event.value
                 self.inventory[rt].put(unused_resource)
+            else:
+                event.cancel()
+
+        return resource
+
+    def get_resource_for_disasters(self, disasters: list[Disaster]) -> Generator[AnyOf, Resource, Resource]:
+        eligible_types = [
+            resource_type
+            for resource_type in ResourceType
+            if any(resource_type in disaster.needed_resources() for disaster in disasters)
+        ]
+        if not eligible_types:
+            eligible_types = list(ResourceType)
+
+        get_events: dict[ResourceType, FilterStoreGet] = {resource_type: self.inventory[resource_type].get() for resource_type in eligible_types}
+        finished: dict[FilterStoreGet, Resource] = yield self.env.any_of(list(get_events.values()))  # pyright: ignore[reportAssignmentType]
+
+        winner_event = self.engine.rng.choice(list(finished.keys()))
+        resource = finished[winner_event]
+
+        for resource_type, event in get_events.items():
+            if event == winner_event:
+                continue
+
+            if event.triggered:
+                self.inventory[resource_type].put(event.value)
             else:
                 event.cancel()
 
@@ -680,7 +725,7 @@ class DumpSite(ResourceNode):
             dump_time = truck_specs.get("dump_time", 10)  # Default 10 minutes
 
             # Apply time variance from config if available
-            variance = self.engine.scenario_config.time_variance
+            variance = self.engine.scenario_config.operational_priors.time_variance
 
             actual_dump_time = dump_time * self.engine.rng.uniform(1 - variance, 1 + variance)
 
@@ -706,19 +751,49 @@ class DumpSite(ResourceNode):
 
 class DisasterStore(simpy.FilterStore):
     items: list[Disaster]
+    _available_event: Event
 
-    def wait_for_any(self) -> Generator[FilterStoreGet | StorePut, Disaster, None]:
+    def __init__(self, env: simpy.Environment):
+        super().__init__(env)
+        self._available_event = env.event()
+
+    def wait_for_any(self) -> Generator[Event, object, None]:
         """Yields until any item is available."""
-        if self.items:
+        if any(disaster.needed_resources() for disaster in self.items):
             return
+        yield self._available_event
 
-        d: Disaster = yield self.get()
-        yield self.put(d)
+    def _sync_available_event(self) -> None:
+        if any(disaster.needed_resources() for disaster in self.items):
+            if not self._available_event.triggered:
+                self._available_event.succeed()
+            return
+        if self._available_event.triggered:
+            self._available_event = self._env.event()
+
+    def refresh_available_event(self) -> None:
+        self._sync_available_event()
+
+    @override
+    def put(self, item: Disaster) -> StorePut:
+        event = super().put(item)
+        if event.triggered:
+            self._sync_available_event()
+        else:
+            event.callbacks.append(lambda _event: self._sync_available_event())
+        return event
+
+    @override
+    def get(self, filter: Callable[[Disaster], bool] = lambda item: True) -> FilterStoreGet:
+        event = super().get(filter)
+        if event.triggered:
+            self._sync_available_event()
+        else:
+            event.callbacks.append(lambda _event: self._sync_available_event())
+        return event
 
     if TYPE_CHECKING:
-
-        @override
-        def get(self, filter: Callable[[Disaster], bool] = lambda item: True) -> FilterStoreGet: ...
+        pass
 
 
 class Landslide(Disaster):
@@ -730,6 +805,12 @@ class Landslide(Disaster):
     one_hot_index: int = 0
     disaster_type: ClassVar[str] = "landslide"
     seasonal_size_weights: ClassVar[dict[str, float]] = {"small": 0.50, "medium": 0.30, "large": 0.15, "major": 0.05}
+    size_bands: ClassVar[dict[str, tuple[int, int]]] = {
+        "small": (0, 400),
+        "medium": (401, 900),
+        "large": (901, 2999),
+        "major": (3000, 5000),
+    }
 
     dirt: simpy.Container
     initial_size: float
@@ -766,7 +847,12 @@ class Landslide(Disaster):
 
     @override
     def get_scale(self):
-        return self.dirt.level / self.engine.scenario_config.landslide_size_range[1]
+        size_ranges = self.engine.scenario_config.seasonal_spawn.disasters.get("landslide")
+        max_size = 1.0
+        if size_ranges is not None:
+            for rng in size_ranges.size_range_by_season.values():
+                max_size = max(max_size, float(rng[1]))
+        return self.dirt.level / max_size
 
     @property
     @override
@@ -790,9 +876,12 @@ class Landslide(Disaster):
             yield self.dirt.get(amount)
 
             def load(ls: Landslide, excavator: Resource, truck: Resource):
+                load_time = float(truck_specs["load_time"])
+                excavator.record_operating_minutes(load_time)
+                truck.record_operating_minutes(load_time)
 
                 # Simulate Loading Time
-                yield ls.env.timeout(truck_specs["load_time"])
+                yield ls.env.timeout(load_time)
 
                 # 3. Release Excavator immediately (stays on site)
                 yield ls.inventory[ResourceType.EXCAVATOR].put(excavator)
@@ -817,10 +906,39 @@ class Landslide(Disaster):
         size_range: tuple[int, int],
         season: "Season",  # noqa: ARG003
     ) -> "Landslide":
-        size = engine.rng.randint(size_range[0], size_range[1])
+        size = cls.sample_size(engine, size_range)
         disaster = cls(engine, size, dump_site, location=location)
-        disaster.apply_closure_duration_prior("landslide", season)
+        disaster.apply_closure_duration_prior("landslide")
         return disaster
+
+    @classmethod
+    def sample_size(cls, engine: "SimPySimulationEngine", size_range: tuple[int, int]) -> int:
+        low, high = size_range
+        if high <= low:
+            return low
+
+        candidates: list[tuple[tuple[int, int], float]] = []
+        for label in ("small", "medium", "large", "major"):
+            band_low, band_high = cls.size_bands[label]
+            bucket_low = max(low, band_low)
+            bucket_high = min(high, band_high)
+            if bucket_low <= bucket_high:
+                candidates.append(((bucket_low, bucket_high), cls.seasonal_size_weights[label]))
+
+        if not candidates:
+            return engine.rng.randint(low, high)
+
+        total_weight = sum(weight for _, weight in candidates)
+        roll = engine.rng.random() * total_weight
+        cumulative = 0.0
+        selected_low, selected_high = candidates[0][0]
+        for (bucket_low, bucket_high), weight in candidates:
+            cumulative += weight
+            if roll <= cumulative:
+                selected_low, selected_high = bucket_low, bucket_high
+                break
+
+        return engine.rng.randint(selected_low, selected_high)
 
 
 class SnowEvent(Disaster):
@@ -845,16 +963,18 @@ class SnowEvent(Disaster):
 
         self.severity_hours = severity_hours
         self.road_miles_affected = road_miles_affected
-        self.remaining_work = severity_hours * road_miles_affected
+        self.route_prep_complete = False
+        self.compaction_factor = engine.rng.uniform(1.1, 1.8)
+        self.initial_route_prep_minutes = max(20.0, road_miles_affected * 8.0)
+        self.remaining_work = severity_hours * road_miles_affected * self.compaction_factor
         self.initial_work = self.remaining_work
 
         self.severity_minutes = severity_hours * 60.0
-        self.auto_resolve_minutes = self.severity_minutes * engine.scenario_config.snow_auto_resolve_multiplier
-        self.plow_interval_minutes = engine.scenario_config.snow_work_interval_minutes
-        self.apply_operational_prior("snow", self.auto_resolve_minutes)
+        self.plow_interval_minutes = engine.scenario_config.operational_priors.snow_work_interval_minutes
+        baseline_minutes = self.initial_route_prep_minutes + (self.remaining_work / max(1.0, ResourceType.SNOWPLOW.specs["work_rate"])) * 60.0
+        self.apply_operational_prior("snow", baseline_minutes)
 
         self.process = engine.env.process(self.work_loop())
-        self.auto_resolve_process = engine.env.process(self.auto_resolve_loop())
 
     @override
     def needed_resources(self) -> list[ResourceType]:
@@ -874,36 +994,44 @@ class SnowEvent(Disaster):
         return {"color": "lightblue", "label": "Snow", "marker": "*"}
 
     def work_loop(self):
-        """Plow snow until cleared."""
+        """Inspect and clear snow through repeated plow passes."""
         while self.active and self.remaining_work > 0:
             plow = yield self.inventory[ResourceType.SNOWPLOW].get()
 
-            num_plows = len(self.roster[ResourceType.SNOWPLOW])
-            base_rate = ResourceType.SNOWPLOW.specs["work_rate"]
-            efficiency = 1.0
+            if not self.route_prep_complete:
+                prep_hours = self.initial_route_prep_minutes / 60.0
+                plow.consume_fuel(prep_hours)
+                plow.add_operating_cost(prep_hours)
+                yield self.env.timeout(self.initial_route_prep_minutes)
+                self.route_prep_complete = True
+                self.remaining_work = max(0.0, self.remaining_work - self.road_miles_affected)
 
-            work_per_hour = base_rate * efficiency
-            work_hours = (
-                min(self.plow_interval_minutes / 60.0, self.remaining_work / work_per_hour) if work_per_hour > 0 else 0
-            )
-
-            if work_hours > 0:
-                plow.consume_fuel(work_hours)
-                plow.add_operating_cost(work_hours)
-
-                yield self.env.timeout(work_hours * 60)
-                self.remaining_work -= work_per_hour * work_hours
+            if self.remaining_work > 0:
+                work_per_hour = self._plow_work_rate()
+                work_hours = min(self.plow_interval_minutes / 60.0, self.remaining_work / work_per_hour) if work_per_hour > 0 else 0.0
+                if work_hours > 0:
+                    plow.consume_fuel(work_hours)
+                    plow.add_operating_cost(work_hours)
+                    yield self.env.timeout(work_hours * 60.0)
+                    self.remaining_work = max(0.0, self.remaining_work - work_per_hour * work_hours)
 
             yield self.inventory[ResourceType.SNOWPLOW].put(plow)
 
         if self.active:
             yield self.env.process(self.resolve())
 
-    def auto_resolve_loop(self):
-        """Snow melts naturally over time."""
-        yield self.env.timeout(self.auto_resolve_minutes)
-        if self.active:
-            self.remaining_work = 0
+    def _plow_work_rate(self) -> float:
+        base_rate = float(ResourceType.SNOWPLOW.specs["work_rate"])
+        temperature = float(self.engine.calendar.weather_state["temperature"])
+        temperature_bonus = 0.0
+        if temperature >= 10.0:
+            temperature_bonus = 0.75
+        elif temperature >= 5.0:
+            temperature_bonus = 0.35
+        elif temperature <= -5.0:
+            temperature_bonus = -0.2
+
+        return max(1.0, base_rate * (1.0 + temperature_bonus))
 
     @classmethod
     def spawn_from_seasonal(
@@ -915,17 +1043,8 @@ class SnowEvent(Disaster):
         season: "Season",
     ) -> "SnowEvent":
         low, high = size_range
-        prior_cfg = engine.scenario_config.disaster_closure_lognormal_priors.get("snow", {})
-        season_key = season.name.lower()
-        prior = prior_cfg.get(season_key, prior_cfg.get("default"))
-
-        if prior is not None:
-            mu, sigma = prior
-            severity_hours = max(low, min(high, int(engine.rng.lognormvariate(mu, sigma))))
-        else:
-            severity_hours = engine.rng.randint(low, high)
-
-        miles_low, miles_high = engine.scenario_config.snow_road_miles_range
+        severity_hours = engine.rng.randint(low, high)
+        miles_low, miles_high = engine.scenario_config.operational_priors.snow_road_miles_range
         road_miles = engine.rng.uniform(miles_low, miles_high)
         disaster = cls(engine, severity_hours, road_miles, location=location)
         disaster.sampled_closure_duration_hours = float(severity_hours)
@@ -992,8 +1111,8 @@ class WildfireDebris(Disaster):
             num_excavators = len(self.roster[ResourceType.EXCAVATOR])
             efficiency = 1.0
 
-            site_capacity = self.engine.scenario_config.get_site_capacity("wildfire_debris")
-            efficiency = site_capacity.efficiency_curve(num_excavators)
+            if num_excavators <= 0:
+                efficiency = 0.0
 
             amount = min(truck_specs["capacity"] * efficiency, self.debris.level)
             yield self.debris.get(amount)
@@ -1002,9 +1121,8 @@ class WildfireDebris(Disaster):
                 # Loading time
                 load_time = truck_specs["load_time"] / efficiency
 
-                # Consume resources
-                excavator.consume_fuel(load_time / 60)
-                excavator.add_operating_cost(load_time / 60)
+                excavator.record_operating_minutes(load_time)
+                truck.record_operating_minutes(load_time)
 
                 yield debris_site.env.timeout(load_time)
 
@@ -1033,7 +1151,7 @@ class WildfireDebris(Disaster):
     ) -> "WildfireDebris":
         debris_amount = engine.rng.randint(size_range[0], size_range[1])
         disaster = cls(engine, debris_amount, dump_site, location=location)
-        disaster.apply_closure_duration_prior("wildfire_debris", season)
+        disaster.apply_closure_duration_prior("wildfire_debris")
         return disaster
 
 
@@ -1047,119 +1165,163 @@ class FloodEvent(Disaster):
     one_hot_index: int = 3
     disaster_type: ClassVar[str] = "flood"
     seasonal_size_weights: ClassVar[dict[str, float]] = {"minor": 0.55, "moderate": 0.30, "major": 0.15}
+    STANDING_WATER_ONLY: ClassVar[str] = "standing_water_only"
+    DEBRIS_CLEANUP: ClassVar[str] = "debris_cleanup"
+    WASHOUT_REPAIR: ClassVar[str] = "washout_repair"
 
     def __init__(
         self,
         engine: SimPySimulationEngine,
         duration_hours: float,
-        cleanup_needed: bool,
-        cleanup_amount: float,  # cubic yards if cleanup needed
-        dump_node: DumpSite | None,
         location: tuple[float, float] | None = None,
     ):
         super().__init__(engine, location)
 
         self.duration_hours = duration_hours
-        self.cleanup_needed = cleanup_needed
-        self.cleanup_amount = cleanup_amount
-        self.dump_node = dump_node
         self.duration_minutes = duration_hours * 60.0
 
         # Track progress
         self.assessed = False
-        self.flood_resolved = False
-        self.remaining_cleanup = cleanup_amount if cleanup_needed else 0
-        self.initial_cleanup = cleanup_amount
-        self.status_check_interval_minutes = engine.scenario_config.flood_status_check_interval_minutes
+        self.water_receded = False
+        self.status_check_interval_minutes = engine.scenario_config.operational_priors.flood_status_check_interval_minutes
+        self.work_interval_minutes = engine.scenario_config.operational_priors.flood_work_interval_minutes
+        self.post_recede_job_type = self.STANDING_WATER_ONLY
+        self.initial_work = 0.0
+        self.remaining_work = 0.0
+        self.reopen_minutes = 0.0
         self.apply_operational_prior("flood", self.duration_minutes)
 
         self.process = engine.env.process(self.work_loop())
-        self.flood_process = engine.env.process(self.flood_duration_loop())
 
     @override
     def needed_resources(self) -> list[ResourceType]:
         if not self.assessed:
             return [ResourceType.ASSESSMENT_VEHICLE]
-        elif self.cleanup_needed and self.remaining_cleanup > 0:
+        if self.water_receded and self.remaining_work > 0:
             return [ResourceType.EXCAVATOR, ResourceType.TRUCK]
-        else:
-            return []
+        return []
 
     @override
     def percent_remaining(self):
-        if not self.flood_resolved:
-            return 1.0
-        elif self.cleanup_needed:
-            return self.remaining_cleanup / self.initial_cleanup if self.initial_cleanup > 0 else 0
-        else:
+        if self.water_receded and self.initial_work > 0:
+            return self.remaining_work / self.initial_work
+        if self.water_receded:
             return 0.0
+        remaining_ratio = max(0.0, min(1.0, (self.duration_minutes - (self.env.now - self.created_time)) / max(self.duration_minutes, 1.0)))
+        if self.initial_work > 0:
+            return 0.5 + 0.5 * remaining_ratio
+        return remaining_ratio
 
     @override
     def get_scale(self):
-        if self.cleanup_needed:
-            return self.cleanup_amount / 100
         return self.duration_hours / 72  # Normalize to 3-day flood
 
     @property
     @override
     def render(self) -> DisasterRender:
-        if not self.flood_resolved:
+        if not self.water_receded:
             return {"color": "blue", "label": "Flooding", "marker": "v"}
-        elif self.cleanup_needed and self.remaining_cleanup > 0:
-            return {"color": "teal", "label": "Flood Cleanup", "marker": "v"}
-        else:
-            return {"color": "lightgreen", "label": "Flood Resolved", "marker": "v"}
-
-    def flood_duration_loop(self):
-        """Wait for flood to recede."""
-        yield self.env.timeout(self.duration_minutes)
-        self.flood_resolved = True
+        return {"color": "lightgreen", "label": "Flood Resolved", "marker": "v"}
 
     def work_loop(self):
-        """Handle flood response."""
-        # Phase 1: Assessment (must happen during flood)
+        """Handle flood assessment, recession, and post-flood work."""
         if not self.assessed:
-            # Wait for assessment vehicle
             vehicle = yield self.inventory[ResourceType.ASSESSMENT_VEHICLE].get()
 
-            assess_low, assess_high = self.engine.scenario_config.flood_assessment_minutes_range
-            assess_time = self.engine.rng.uniform(assess_low, assess_high)
-            vehicle.consume_fuel(assess_time / 60)
-            vehicle.add_operating_cost(assess_time / 60)
-
+            assess_time = self._assessment_cycle_minutes()
+            assess_hours = assess_time / 60.0
+            vehicle.consume_fuel(assess_hours)
+            vehicle.add_operating_cost(assess_hours)
             yield self.env.timeout(assess_time)
             self.assessed = True
-
-            # Return assessment vehicle
+            self._plan_post_recede_work()
+            self.engine.disaster_store.refresh_available_event()
             yield self.inventory[ResourceType.ASSESSMENT_VEHICLE].put(vehicle)
 
-        # Phase 2: Wait for flood to recede
-        while not self.flood_resolved:
+        while not self.water_receded:
             yield self.env.timeout(self.status_check_interval_minutes)
+            self.water_receded = self.env.now - self.created_time >= self.duration_minutes
+            self.engine.disaster_store.refresh_available_event()
 
-        # Phase 3: Cleanup if needed
-        if self.cleanup_needed and self.remaining_cleanup > 0 and self.dump_node:
-            truck_specs = ResourceType.TRUCK.specs
-            dump_trips = []
+        while self.active and self.remaining_work > 0:
+            excavator = yield self.inventory[ResourceType.EXCAVATOR].get()
+            truck = yield self.inventory[ResourceType.TRUCK].get()
 
-            while self.active and self.remaining_cleanup > 0:
-                excavator = yield self.inventory[ResourceType.EXCAVATOR].get()
-                truck = yield self.inventory[ResourceType.TRUCK].get()
+            work_hours = self.work_interval_minutes / 60.0
+            work_rate = min(
+                float(ResourceType.EXCAVATOR.specs["work_rate"]),
+                float(ResourceType.TRUCK.specs["capacity"]) / max(work_hours, 1e-6),
+            ) * self._work_rate_multiplier()
+            work_amount = min(self.remaining_work, work_rate * work_hours)
 
-                amount = min(truck_specs["capacity"], self.remaining_cleanup)
-                self.remaining_cleanup -= amount
+            if work_amount > 0:
+                excavator.consume_fuel(work_hours)
+                excavator.add_operating_cost(work_hours)
+                truck.consume_fuel(work_hours)
+                truck.add_operating_cost(work_hours)
+                yield self.env.timeout(self.work_interval_minutes)
+                self.remaining_work -= work_amount
+                if self.remaining_work <= 0:
+                    self.engine.disaster_store.refresh_available_event()
 
-                def load_cleanup(flood_event, excavator, truck):
-                    yield flood_event.env.timeout(truck_specs["load_time"])
-                    yield flood_event.inventory[ResourceType.EXCAVATOR].put(excavator)
-                    flood_event.dump_node.transfer_resource(truck)
+            yield self.inventory[ResourceType.EXCAVATOR].put(excavator)
+            yield self.inventory[ResourceType.TRUCK].put(truck)
 
-                dump_trips.append(self.env.process(load_cleanup(self, excavator, truck)))
-
-            yield self.env.all_of(dump_trips)
+        if self.reopen_minutes > 0:
+            yield self.env.timeout(self.reopen_minutes)
 
         if self.active:
             yield self.env.process(self.resolve())
+
+    def _assessment_cycle_minutes(self) -> float:
+        assess_low, assess_high = self.engine.scenario_config.operational_priors.flood_assessment_minutes_range
+        return self.engine.rng.uniform(assess_low, assess_high)
+
+    def _pick_post_recede_job_type(self) -> str:
+        weights = dict(self.engine.scenario_config.operational_priors.flood_post_recede_job_probabilities)
+        if self.severity_index >= 0.8:
+            weights[self.WASHOUT_REPAIR] = weights.get(self.WASHOUT_REPAIR, 0.0) + 0.35
+            weights[self.STANDING_WATER_ONLY] = max(0.0, weights.get(self.STANDING_WATER_ONLY, 0.0) - 0.15)
+        elif self.severity_index <= 0.55:
+            weights[self.STANDING_WATER_ONLY] = weights.get(self.STANDING_WATER_ONLY, 0.0) + 0.25
+            weights[self.WASHOUT_REPAIR] = max(0.0, weights.get(self.WASHOUT_REPAIR, 0.0) - 0.1)
+
+        total_weight = sum(weight for weight in weights.values() if weight > 0)
+        if total_weight <= 0:
+            return self.STANDING_WATER_ONLY
+
+        roll = self.engine.rng.random() * total_weight
+        cumulative = 0.0
+        for job_type, weight in weights.items():
+            if weight <= 0:
+                continue
+            cumulative += weight
+            if roll <= cumulative:
+                return job_type
+        return self.STANDING_WATER_ONLY
+
+    def _plan_post_recede_work(self) -> None:
+        priors = self.engine.scenario_config.operational_priors
+        self.post_recede_job_type = self._pick_post_recede_job_type()
+        reopen_low, reopen_high = priors.flood_reopen_minutes_range
+        self.reopen_minutes = self.engine.rng.uniform(reopen_low, reopen_high)
+
+        if self.post_recede_job_type == self.DEBRIS_CLEANUP:
+            low, high = priors.flood_debris_work_range
+            self.initial_work = self.engine.rng.uniform(low, high)
+        elif self.post_recede_job_type == self.WASHOUT_REPAIR:
+            low, high = priors.flood_washout_work_range
+            self.initial_work = self.engine.rng.uniform(low, high)
+        else:
+            self.initial_work = 0.0
+
+        self.remaining_work = self.initial_work
+
+    def _work_rate_multiplier(self) -> float:
+        priors = self.engine.scenario_config.operational_priors
+        if self.post_recede_job_type == self.WASHOUT_REPAIR:
+            return priors.flood_washout_work_rate_multiplier
+        return priors.flood_debris_work_rate_multiplier
 
     @classmethod
     def spawn_from_seasonal(
@@ -1171,35 +1333,22 @@ class FloodEvent(Disaster):
         season: "Season",
     ) -> "FloodEvent":
         low, high = size_range
-        prior_cfg = engine.scenario_config.disaster_closure_lognormal_priors.get("flood", {})
-        season_key = season.name.lower()
-        prior = prior_cfg.get(season_key, prior_cfg.get("default"))
-
-        if prior is not None:
-            mu, sigma = prior
-            duration_hours = max(low, min(high, int(engine.rng.lognormvariate(mu, sigma))))
-        else:
-            duration_hours = engine.rng.randint(low, high)
+        duration_hours = engine.rng.randint(low, high)
         duration_hours = max(1, duration_hours)
-
-        cleanup_needed = engine.rng.random() < engine.scenario_config.flood_cleanup_probability
-        amount_low, amount_high = engine.scenario_config.flood_cleanup_amount_range
-        cleanup_amount = engine.rng.randint(amount_low, amount_high) if cleanup_needed else 0
-        assessment_cfg = engine.scenario_config.num_assessment_vehicles
-        assessment_capacity = assessment_cfg[1] if isinstance(assessment_cfg, tuple) else assessment_cfg
 
         disaster = cls(
             engine,
             duration_hours=duration_hours,
-            cleanup_needed=cleanup_needed,
-            cleanup_amount=cleanup_amount,
-            dump_node=dump_site,
             location=location,
         )
         disaster.sampled_closure_duration_hours = float(duration_hours)
+        assessment_capacity = engine.scenario_config.resource_counts.assessment_vehicles
+        if isinstance(assessment_capacity, tuple):
+            assessment_capacity = assessment_capacity[1]
         if assessment_capacity <= 0:
             # If no assessment vehicles exist, skip assessment phase to avoid deadlock.
             disaster.assessed = True
+            disaster._plan_post_recede_work()
         return disaster
 
 

@@ -97,8 +97,8 @@ class ScenarioConfig:
     num_assessment_vehicles: int | tuple[int, int] = 0
 
     # Disaster counts - more landslides to create more decision points
-    num_landslides: int | tuple[int, int] = (15, 25)
-    landslide_size_range: tuple[int, int] = (200, 400)
+    num_landslides: int | tuple[int, int] = (10, 10)
+    landslide_size_range: tuple[int, int] = (200, 200)
 
     # Distance range for landslide spawning (in same units as speeds)
     landslide_distance_range: tuple[int, int] = (1800, 2200)
@@ -248,7 +248,10 @@ class SimPySimulationEngine:
         self._gis_edge_segments: list[tuple[tuple[float, float], tuple[float, float]]] | None = None
         self._gis_bounds: tuple[float, float, float, float] | None = None
 
-        print(f"Running {self.policy.name} with seed {self.seed}.")
+        # record every decision data
+        self.records: list[dict[str, Any]] = []
+
+        # print(f"Running {self.policy.name} with seed {self.seed}.")
 
     # ----------------------------------------------------------------------------
     # MARK: Run Control

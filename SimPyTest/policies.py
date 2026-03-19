@@ -20,13 +20,13 @@ from .calendar import Season
 class TournamentConfig:
     """Configuration for the tree search tournament policy."""
 
-    depth: int = 1  # 1 = run to completion, 2+ = look ahead N decisions
+    depth: int = 2  # 1 = run to completion, 2+ = look ahead N decisions
 
 
 TOURNAMENT_DEPTH = TournamentConfig()
 
 DISABLE_TOURNAMENT_MULTIPROCESSING = True
-TOURNAMENT_DEBUG = False
+TOURNAMENT_DEBUG = True
 TOURNAMENT_POLICY_WHITELIST: set[str] | None = None
 
 
@@ -845,6 +845,13 @@ def tournament_recursive_policy_func(resource: Resource, disasters: list[Disaste
             return fallback_policy.func(resource, disasters, env)
         return None
 
+    id_score = {}
+    for r in results:
+        if r["success"]:
+            id_score[r["move_id"]] = r["time"]
+
+    record_decision(resource, disasters, best_result, best_score, id_score)
+
     return targets[0]
 
 
@@ -1289,7 +1296,7 @@ def budget_aware_policy(resource: Resource, disasters: list[Disaster], _env: sim
 # ============================================================================
 # MARK: Record_decision
 # ============================================================================
-def record_decision(resource: Resource, disasters: list[Disaster], best_result, min_time, time_scores):
+def record_decision(resource: Resource, disasters: list[Disaster], best_result, min_time, id_scores):
     master_engine = resource.engine
 
     # Record status and policy
@@ -1309,7 +1316,7 @@ def record_decision(resource: Resource, disasters: list[Disaster], best_result, 
         "disaster_info":{
             "landslide": r_landslide
         },
-        "time_score": time_scores,
+        "time_score": id_scores,
         "target_id": best_result["move_id"],
         "time": min_time,
         "policy": best_result["policy"]

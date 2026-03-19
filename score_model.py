@@ -12,7 +12,13 @@ import torch.nn as nn
 import torch
 from torch.utils.data import Dataset, DataLoader
 
-
+model_config = {
+    "r_dim": 3,
+    "d_dim": 9,
+    "hidden_width": 256
+}
+dataset_path = "p1.json"
+model_name = "imp_policy1.pt"
 
 # =========================
 # read JSONL
@@ -23,9 +29,8 @@ def load_jsonl(path: str) -> List[Dict[str, Any]]:
         records = json.load(f)
     return records
 
-# DISASTER_TYPES = ["landslide", "flood", "earthquake", "fire", "typhoon",
-#                   "tsunami", "volcano", "drought", "storm", "other"]
-# type_to_idx = {t:i for i,t in enumerate(DISASTER_TYPES)}
+DISASTER_TYPES = ["landslide", "other"]
+type_to_idx = {t:i for i,t in enumerate(DISASTER_TYPES)}
 
 def featurize_sample(sample, max_disasters=10, shuffle_candidates=False, seed=None):
     # ---- 1) global resource features r ----
@@ -45,15 +50,19 @@ def featurize_sample(sample, max_disasters=10, shuffle_candidates=False, seed=No
             truck = float(info["truck"][k])
             excavators = float(info["excavators"][k])
 
-            # type one-hot
-            # tvec = np.zeros((len(DISASTER_TYPES),), dtype=np.float32)
-            # tvec[type_to_idx.get(dtype, type_to_idx["other"])] = 1.0
+            dx = x - prev_x
+            dy = y - prev_y
+            dist = (dx ** 2 + dy ** 2) ** 0.5
 
-            # dvec = np.concatenate([
-            #     tvec,
-            #     np.array([remaining, remain_size, float(x), float(y), truck, excavators], dtype=np.float32)
-            # ], axis=0)
-            dvec = np.array([remaining, remain_size, float(x), float(y), truck, excavators], dtype=np.float32)
+            # type one-hot
+            tvec = np.zeros((len(DISASTER_TYPES),), dtype=np.float32)
+            tvec[type_to_idx.get(dtype, type_to_idx["other"])] = 1.0
+
+            dvec = np.concatenate([
+                tvec,
+                np.array([remaining, remain_size, float(x), float(y), truck, excavators, dist], dtype=np.float32)
+            ], axis=0)
+            # dvec = np.array([remaining, remain_size, float(x), float(y), truck, excavators], dtype=np.float32)
 
             items.append((did, dvec))
 
@@ -63,8 +72,8 @@ def featurize_sample(sample, max_disasters=10, shuffle_candidates=False, seed=No
             rng.shuffle(items)
 
         # ---- 4) pad/truncate to max_disasters ----
-        # d_dim = len(DISASTER_TYPES) + 6
-        d_dim = 6 # number of disaster feature
+        d_dim = model_config["d_dim"]
+        # d_dim = 6 # number of disaster feature
         D = np.zeros((max_disasters, d_dim), dtype=np.float32)
         mask = np.zeros((max_disasters,), dtype=np.float32)
         ids = np.full((max_disasters,), -1, dtype=np.int64)
@@ -198,7 +207,7 @@ def train(model, optimizer, criterion, train_loader, val_loader):
         # ====== SAVE BEST ======
         if val_acc > best_val_acc:
             best_val_acc = val_acc
-            torch.save(model.state_dict(), "best_model.pt")
+            torch.save(model.state_dict(), model_name)
 
 def permutation_stress_test(model, raw_samples, trials=10):
     model.eval()
@@ -277,7 +286,6 @@ def evaluate(model, dataloader, device="cpu"):
 # MAIN：80/20 split data
 # =========================
 if __name__ == "__main__":
-    dataset_path = "records0.json"
     raw_data = load_jsonl(dataset_path)
     print(f"Loaded {len(raw_data)} records")
     # print(raw_data[0])
@@ -292,7 +300,7 @@ if __name__ == "__main__":
         if y is not None:
             processed.append((r, D, mask, y))
 
-    print(processed[0][0])
+    # print(processed[0][0])
 
     train_data, temp_data = train_test_split(
         processed,
@@ -331,9 +339,9 @@ if __name__ == "__main__":
     )
 
     model = DeepSetsChooser(
-        r_dim=3,
-        d_dim= 6,
-        h=64
+        r_dim= model_config["r_dim"],
+        d_dim= model_config["d_dim"],
+        h= model_config["hidden_width"]
     )
 
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
@@ -341,11 +349,12 @@ if __name__ == "__main__":
 
     train(model, optimizer, criterion, train_loader, val_loader)
 
-    model.load_state_dict(torch.load("best_model.pt"))
+    model.load_state_dict(torch.load(model_name))
     permutation_stress_test(model, raw_data)
 
     test_metrics = evaluate(model, test_loader)
     
+
     print("===== Test Results =====")
     for k, v in test_metrics.items():
         print(f"{k}: {v:.4f}")

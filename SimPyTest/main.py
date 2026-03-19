@@ -11,6 +11,7 @@ from argparse import ArgumentParser
 from collections import defaultdict
 from .engine import SimPySimulationEngine
 from .simulation import *
+import json
 
 
 class PolicyResult(TypedDict):
@@ -51,12 +52,12 @@ if __name__ == "__main__":
                 aggregated_results[args.policy]["success"].append(duration)
             else:
                 aggregated_results[args.policy]["fail"] += 1
-
+            
+            records.extend(engine.records)
             print(f"Completed {args.policy} in {duration} seconds.")
         else:
             for policy in POLICIES:
                 if policy.name == "tournament":
-                # if policy.name == "tournament" or policy.name == "k-tournament" or policy.name == "multi-policy":
                     continue
                 engine = SimPySimulationEngine(policy=policy, seed=seed, live_plot=args.live)
                 engine.initialize_world()

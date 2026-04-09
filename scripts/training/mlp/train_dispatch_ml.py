@@ -8,6 +8,7 @@ from typing import cast
 
 from .generate_dispatch_training_data import collect_demonstration_dataset
 from .ml_dispatch import DemonstrationBatch, append_demonstration_batches, train_behavior_cloning, write_json
+import torch
 
 
 class MyNamespace(Namespace):
@@ -92,6 +93,7 @@ if __name__ == "__main__":
 
     dataset = load_or_collect_dataset(args)
     dataset.validate_for_training()
+    device = "cuda" if torch.cuda.is_available() else "cpu"
     policy, history = train_behavior_cloning(
         dataset=dataset,
         max_visible_disasters=args.max_visible_disasters,
@@ -103,7 +105,7 @@ if __name__ == "__main__":
         hidden_dim=args.hidden_dim,
         depth=args.depth,
         dropout=args.dropout,
-        device="mps",
+        device=device,
     )
     policy.metadata.update(
         {

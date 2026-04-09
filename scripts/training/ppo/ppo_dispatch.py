@@ -153,9 +153,13 @@ class SeedCyclingEnv(DisasterResponseGym):
 
 
 def build_training_config() -> PPOTrainingConfig:
+    # curriculum_stages = [
+    #     CurriculumStage(name="stage_1_easy", scenario_name="clatsop_landslide_curriculum", timesteps=8_000),
+    #     CurriculumStage(name="stage_2_small_ramp", scenario_name="clatsop_landslide_curriculum_stage2", timesteps=12_000),
+    # ]
+
     curriculum_stages = [
-        CurriculumStage(name="stage_1_easy", scenario_name="clatsop_landslide_curriculum", timesteps=8_000),
-        CurriculumStage(name="stage_2_small_ramp", scenario_name="clatsop_landslide_curriculum_stage2", timesteps=12_000),
+        CurriculumStage(name="stage_1_easy", scenario_name="clatsop_landslide_ops", timesteps=20_000),
     ]
     return PPOTrainingConfig(
         total_timesteps=TOTAL_TIMESTEPS,

@@ -7,7 +7,7 @@ import time
 from typing import cast
 
 from .generate_dispatch_training_data import collect_demonstration_dataset
-from .ml_dispatch import DemonstrationBatch, append_demonstration_batches, train_behavior_cloning, write_json
+from .ml_dispatch import DemonstrationBatch, append_demonstration_batches, train_behavior_cloning, write_json, evaluate_model
 import torch
 
 
@@ -79,6 +79,21 @@ def load_or_collect_dataset(args: MyNamespace) -> DemonstrationBatch:
         max_visible_disasters=args.max_visible_disasters,
     )
 
+def resolve_checkpoint_scenario(args: MyNamespace, dataset: DemonstrationBatch) -> str:
+    difficulties = parse_csv(args.difficulties)
+    if difficulties:
+        return difficulties[0]
+    dataset_difficulty = dataset.metadata.get("difficulty")
+    if isinstance(dataset_difficulty, str) and dataset_difficulty:
+        return dataset_difficulty
+    merged_from = dataset.metadata.get("merged_from")
+    if isinstance(merged_from, list):
+        for item in merged_from:
+            if isinstance(item, dict):
+                difficulty = item.get("difficulty")
+                if isinstance(difficulty, str) and difficulty:
+                    return difficulty
+    return "clatsop_landslide_curriculum"
 
 if __name__ == "__main__":
     args = parse_args()
@@ -118,5 +133,24 @@ if __name__ == "__main__":
     )
     policy.save(run_dir)
     write_json(run_dir / "training_history.json", {"epochs": history.epochs})
+
+    checkpoint_scenario = resolve_checkpoint_scenario(args, dataset)
+    checkpoint_seeds = list(range(80, 100))
+    checkpoint_metrics = evaluate_model(
+        policy,
+        checkpoint_seeds,
+        True,
+        "dispatch_ml_checkpoint",
+        scenario_name=checkpoint_scenario,
+        max_visible_disasters=args.max_visible_disasters,
+    )
+    write_json(run_dir / "checkpoint_metrics.json", checkpoint_metrics)
+
+    print(
+        "Checkpoint | "
+        f"obj={checkpoint_metrics['avg_objective_score']:.2f} | "
+        f"success={checkpoint_metrics['success_rate'] * 100:.1f}% | "
+        f"reward={checkpoint_metrics['avg_total_reward']:.2f}"
+    )
 
     print(f"Saved generic dispatch model to {run_dir}")

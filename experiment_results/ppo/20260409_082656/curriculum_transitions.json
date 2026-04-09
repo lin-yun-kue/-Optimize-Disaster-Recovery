@@ -1,0 +1,12 @@
+{
+  "history": [
+    {
+      "completed_total_timesteps": 8192,
+      "scenario_name": "clatsop_landslide_ops",
+      "stage_index": 0,
+      "stage_name": "stage_1_easy",
+      "started_total_timesteps": 0,
+      "timesteps": 8000
+    }
+  ]
+}

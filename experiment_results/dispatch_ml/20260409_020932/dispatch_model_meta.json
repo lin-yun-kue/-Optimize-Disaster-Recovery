@@ -1,0 +1,135 @@
+{
+  "batch_size": 256,
+  "candidate_dim": 14,
+  "current_dim": 7,
+  "dataset_metadata": {
+    "difficulties": [
+      "clatsop_landslide_ops"
+    ],
+    "difficulty": "clatsop_landslide_ops",
+    "episodes": [
+      {
+        "included_in_dataset": true,
+        "seed": 0,
+        "steps": 262,
+        "success": false,
+        "teacher_policy": "tournament",
+        "terminal_outcome": "FAIL_DEADLOCK"
+      },
+      {
+        "included_in_dataset": true,
+        "seed": 1,
+        "steps": 1252,
+        "success": true,
+        "teacher_policy": "tournament",
+        "terminal_outcome": "SUCCESS"
+      },
+      {
+        "included_in_dataset": true,
+        "seed": 2,
+        "steps": 739,
+        "success": true,
+        "teacher_policy": "tournament",
+        "terminal_outcome": "SUCCESS"
+      },
+      {
+        "included_in_dataset": true,
+        "seed": 3,
+        "steps": 769,
+        "success": true,
+        "teacher_policy": "tournament",
+        "terminal_outcome": "SUCCESS"
+      },
+      {
+        "included_in_dataset": true,
+        "seed": 4,
+        "steps": 1107,
+        "success": true,
+        "teacher_policy": "tournament",
+        "terminal_outcome": "SUCCESS"
+      },
+      {
+        "included_in_dataset": true,
+        "seed": 5,
+        "steps": 522,
+        "success": true,
+        "teacher_policy": "tournament",
+        "terminal_outcome": "SUCCESS"
+      },
+      {
+        "included_in_dataset": true,
+        "seed": 6,
+        "steps": 767,
+        "success": true,
+        "teacher_policy": "tournament",
+        "terminal_outcome": "SUCCESS"
+      },
+      {
+        "included_in_dataset": true,
+        "seed": 7,
+        "steps": 645,
+        "success": true,
+        "teacher_policy": "tournament",
+        "terminal_outcome": "SUCCESS"
+      },
+      {
+        "included_in_dataset": true,
+        "seed": 8,
+        "steps": 298,
+        "success": true,
+        "teacher_policy": "tournament",
+        "terminal_outcome": "SUCCESS"
+      },
+      {
+        "included_in_dataset": true,
+        "seed": 9,
+        "steps": 76,
+        "success": true,
+        "teacher_policy": "tournament",
+        "terminal_outcome": "SUCCESS"
+      }
+    ],
+    "max_visible_disasters": 5,
+    "num_examples": 6437,
+    "seed_values": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9
+    ],
+    "successful_episodes_only": false,
+    "teacher_counts": {
+      "tournament": 6437
+    },
+    "teachers": [
+      "tournament"
+    ],
+    "train_seeds": 10
+  },
+  "dataset_path": "experiment_results/dispatch_datasets/bc_bootstrap_landslide_20260406_122110/demonstrations.npz",
+  "dataset_paths": [
+    "experiment_results/dispatch_datasets/bc_bootstrap_landslide_20260406_122110/demonstrations.npz"
+  ],
+  "depth": 3,
+  "dropout": 0.1,
+  "epochs": 30,
+  "eval_seeds": 10,
+  "final_train_accuracy": 0.7285122540559199,
+  "final_val_accuracy": 0.7293934681181959,
+  "global_dim": 10,
+  "hidden_dim": 256,
+  "input_dim": 92,
+  "learning_rate": 0.001,
+  "max_visible_disasters": 5,
+  "model_type": "candidate_scorer",
+  "output_dim": 5,
+  "seed": 0,
+  "train_seeds": 10,
+  "weight_decay": 0.0001
+}

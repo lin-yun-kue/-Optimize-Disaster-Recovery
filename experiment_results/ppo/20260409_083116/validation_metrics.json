@@ -1,0 +1,1195 @@
+{
+  "history": [
+    {
+      "avg_invalid_action_count": 0,
+      "avg_invalid_action_remaps": 0,
+      "avg_objective_score": -233155.00358067857,
+      "avg_sim_time": 10339.780560647263,
+      "avg_total_reward": -18209.178676291875,
+      "avg_valid_action_ratio": 0.5276973817555032,
+      "avg_wall_time_s": 2.5651210949756207,
+      "episodes": [
+        {
+          "invalid_action_count": 0,
+          "invalid_action_remaps": 0,
+          "kpis": {
+            "avg_resolution_time_min": 4431.198133465949,
+            "avg_response_time_min": 3534.552304157428,
+            "resolution_rate": 1.0,
+            "total_spent": 323914.41841279075,
+            "total_weighted_closure_hours": 986.9755309273157
+          },
+          "objective_score": -325108.16692554235,
+          "seed": 80,
+          "sim_time": 12406.37890945605,
+          "success": true,
+          "terminal_outcome": "SUCCESS",
+          "total_reward": -26272.568189584592,
+          "valid_action_ratio": 0.7494082840236675,
+          "wall_time_s": 3.3029367001727223
+        },
+        {
+          "invalid_action_count": 0,
+          "invalid_action_remaps": 0,
+          "kpis": {
+            "avg_resolution_time_min": 2239.4476872866335,
+            "avg_response_time_min": 1515.628650978189,
+            "resolution_rate": 1.0,
+            "total_spent": 284738.89162418956,
+            "total_weighted_closure_hours": 537.1688519238205
+          },
+          "objective_score": -285458.3060950891,
+          "seed": 81,
+          "sim_time": 10934.737138542603,
+          "success": true,
+          "terminal_outcome": "SUCCESS",
+          "total_reward": -22672.391470723676,
+          "valid_action_ratio": 0.571451876019577,
+          "wall_time_s": 2.9810313996858895
+        },
+        {
+          "invalid_action_count": 0,
+          "invalid_action_remaps": 0,
+          "kpis": {
+            "avg_resolution_time_min": 1735.9367256190758,
+            "avg_response_time_min": 750.6804796705328,
+            "resolution_rate": 1.0,
+            "total_spent": 229723.21290858375,
+            "total_weighted_closure_hours": 297.4238256560684
+          },
+          "objective_score": -230206.25285196514,
+          "seed": 82,
+          "sim_time": 11136.967063518814,
+          "success": true,
+          "terminal_outcome": "SUCCESS",
+          "total_reward": -17706.965908108283,
+          "valid_action_ratio": 0.3383486238532051,
+          "wall_time_s": 2.606393900234252
+        },
+        {
+          "invalid_action_count": 0,
+          "invalid_action_remaps": 0,
+          "kpis": {
+            "avg_resolution_time_min": 1529.6453457794582,
+            "avg_response_time_min": 950.5128442530257,
+            "resolution_rate": 1.0,
+            "total_spent": 109543.46492551365,
+            "total_weighted_closure_hours": 209.66338872817107
+          },
+          "objective_score": -109837.01303227455,
+          "seed": 83,
+          "sim_time": 5033.083081963989,
+          "success": true,
+          "terminal_outcome": "SUCCESS",
+          "total_reward": -7920.442577972653,
+          "valid_action_ratio": 0.5027829313543595,
+          "wall_time_s": 1.3088179999031126
+        },
+        {
+          "invalid_action_count": 0,
+          "invalid_action_remaps": 0,
+          "kpis": {
+            "avg_resolution_time_min": 4703.149672893427,
+            "avg_response_time_min": 3798.333441381096,
+            "resolution_rate": 1.0,
+            "total_spent": 273269.91542880377,
+            "total_weighted_closure_hours": 1047.5482038091293
+          },
+          "objective_score": -274535.99768189713,
+          "seed": 84,
+          "sim_time": 13112.042957055879,
+          "success": true,
+          "terminal_outcome": "SUCCESS",
+          "total_reward": -21369.9337218406,
+          "valid_action_ratio": 0.7689364957918893,
+          "wall_time_s": 3.154427799861878
+        },
+        {
+          "invalid_action_count": 0,
+          "invalid_action_remaps": 0,
+          "kpis": {
+            "avg_resolution_time_min": 4130.459540082079,
+            "avg_response_time_min": 3094.246468217658,
+            "resolution_rate": 1.0,
+            "total_spent": 436724.01375800476,
+            "total_weighted_closure_hours": 1061.5281018010942
+          },
+          "objective_score": -438068.98609986453,
+          "seed": 85,
+          "sim_time": 17006.654403521083,
+          "success": true,
+          "terminal_outcome": "SUCCESS",
+          "total_reward": -36699.68903813608,
+          "valid_action_ratio": 0.6746376811594235,
+          "wall_time_s": 4.010832199826837
+        },
+        {
+          "invalid_action_count": 0,
+          "invalid_action_remaps": 0,
+          "kpis": {
+            "avg_resolution_time_min": 3443.813070143171,
+            "avg_response_time_min": 2245.8314842493332,
+            "resolution_rate": 1.0,
+            "total_spent": 237925.80448680447,
+            "total_weighted_closure_hours": 531.035975416077
+          },
+          "objective_score": -238656.74550549034,
+          "seed": 86,
+          "sim_time": 11994.30259618709,
+          "success": true,
+          "terminal_outcome": "SUCCESS",
+          "total_reward": -18221.398568479097,
+          "valid_action_ratio": 0.5481292517006926,
+          "wall_time_s": 2.966218899935484
+        },
+        {
+          "invalid_action_count": 0,
+          "invalid_action_remaps": 0,
+          "kpis": {
+            "avg_resolution_time_min": 1380.3642442177415,
+            "avg_response_time_min": 863.2098191607603,
+            "resolution_rate": 1.0,
+            "total_spent": 181570.99354073533,
+            "total_weighted_closure_hours": 307.45312932876493
+          },
+          "objective_score": -182027.18386129662,
+          "seed": 87,
+          "sim_time": 8924.231473951244,
+          "success": true,
+          "terminal_outcome": "SUCCESS",
+          "total_reward": -13963.572949677098,
+          "valid_action_ratio": 0.5009126466753575,
+          "wall_time_s": 1.8332592002116144
+        },
+        {
+          "invalid_action_count": 0,
+          "invalid_action_remaps": 0,
+          "kpis": {
+            "avg_resolution_time_min": 1671.0258044996733,
+            "avg_response_time_min": 1101.3966118870226,
+            "resolution_rate": 1.0,
+            "total_spent": 264323.89711254905,
+            "total_weighted_closure_hours": 458.08387387351047
+          },
+          "objective_score": -264954.42563597136,
+          "seed": 88,
+          "sim_time": 10346.678972927351,
+          "success": true,
+          "terminal_outcome": "SUCCESS",
+          "total_reward": -21236.090763452972,
+          "valid_action_ratio": 0.5278752436647212,
+          "wall_time_s": 2.489101799670607
+        },
+        {
+          "invalid_action_count": 0,
+          "invalid_action_remaps": 0,
+          "kpis": {
+            "avg_resolution_time_min": 1416.1949922257177,
+            "avg_response_time_min": 834.4165464879111,
+            "resolution_rate": 1.0,
+            "total_spent": 174896.60650398585,
+            "total_weighted_closure_hours": 218.37726780120565
+          },
+          "objective_score": -175210.91008958043,
+          "seed": 89,
+          "sim_time": 5755.579067602661,
+          "success": true,
+          "terminal_outcome": "SUCCESS",
+          "total_reward": -14115.870376713001,
+          "valid_action_ratio": 0.4373287671232886,
+          "wall_time_s": 1.450066499877721
+        },
+        {
+          "invalid_action_count": 0,
+          "invalid_action_remaps": 0,
+          "kpis": {
+            "avg_resolution_time_min": 3181.5816973213114,
+            "avg_response_time_min": 2364.8220793216783,
+            "resolution_rate": 1.0,
+            "total_spent": 217906.92468077104,
+            "total_weighted_closure_hours": 654.1331969692617
+          },
+          "objective_score": -218742.73068298926,
+          "seed": 90,
+          "sim_time": 10900.36831493747,
+          "success": true,
+          "terminal_outcome": "SUCCESS",
+          "total_reward": -16446.343432635556,
+          "valid_action_ratio": 0.6423728813559276,
+          "wall_time_s": 2.9066225001588464
+        },
+        {
+          "invalid_action_count": 0,
+          "invalid_action_remaps": 0,
+          "kpis": {
+            "avg_resolution_time_min": 2295.168955867402,
+            "avg_response_time_min": 1675.6153314267592,
+            "resolution_rate": 1.0,
+            "total_spent": 259318.23072095177,
+            "total_weighted_closure_hours": 550.5345268807275
+          },
+          "objective_score": -260045.40215518966,
+          "seed": 91,
+          "sim_time": 10598.21444142937,
+          "success": true,
+          "terminal_outcome": "SUCCESS",
+          "total_reward": -20740.814027596844,
+          "valid_action_ratio": 0.6390338164251217,
+          "wall_time_s": 2.647319400217384
+        },
+        {
+          "invalid_action_count": 0,
+          "invalid_action_remaps": 0,
+          "kpis": {
+            "avg_resolution_time_min": 804.6018407363978,
+            "avg_response_time_min": 226.4545535352404,
+            "resolution_rate": 1.0,
+            "total_spent": 146883.86028516368,
+            "total_weighted_closure_hours": 165.4261384554034
+          },
+          "objective_score": -147188.68013958028,
+          "seed": 92,
+          "sim_time": 8363.622957671243,
+          "success": true,
+          "terminal_outcome": "SUCCESS",
+          "total_reward": -10192.391263058034,
+          "valid_action_ratio": 0.2588235294117651,
+          "wall_time_s": 2.1710152002051473
+        },
+        {
+          "invalid_action_count": 0,
+          "invalid_action_remaps": 0,
+          "kpis": {
+            "avg_resolution_time_min": 4261.057319683774,
+            "avg_response_time_min": 3205.979650916245,
+            "resolution_rate": 1.0,
+            "total_spent": 303463.0442538207,
+            "total_weighted_closure_hours": 949.0795003375661
+          },
+          "objective_score": -304649.07156366075,
+          "seed": 93,
+          "sim_time": 14216.868570146415,
+          "success": true,
+          "terminal_outcome": "SUCCESS",
+          "total_reward": -24094.895400022364,
+          "valid_action_ratio": 0.602229965156804,
+          "wall_time_s": 3.532688000239432
+        },
+        {
+          "invalid_action_count": 0,
+          "invalid_action_remaps": 0,
+          "kpis": {
+            "avg_resolution_time_min": 2060.9970752743834,
+            "avg_response_time_min": 1431.5868316413523,
+            "resolution_rate": 1.0,
+            "total_spent": 254805.30968538832,
+            "total_weighted_closure_hours": 423.7409986764132
+          },
+          "objective_score": -255369.41041328685,
+          "seed": 94,
+          "sim_time": 8421.583753326559,
+          "success": true,
+          "terminal_outcome": "SUCCESS",
+          "total_reward": -20896.291581446516,
+          "valid_action_ratio": 0.6111353711790445,
+          "wall_time_s": 2.300597299821675
+        },
+        {
+          "invalid_action_count": 0,
+          "invalid_action_remaps": 0,
+          "kpis": {
+            "avg_resolution_time_min": 3336.1132469747067,
+            "avg_response_time_min": 2535.45062666229,
+            "resolution_rate": 1.0,
+            "total_spent": 264164.8568882246,
+            "total_weighted_closure_hours": 857.3811044724998
+          },
+          "objective_score": -265237.110032193,
+          "seed": 95,
+          "sim_time": 12892.322369753501,
+          "success": true,
+          "terminal_outcome": "SUCCESS",
+          "total_reward": -19793.795526414913,
+          "valid_action_ratio": 0.6761560693641627,
+          "wall_time_s": 3.4896123996004462
+        },
+        {
+          "invalid_action_count": 0,
+          "invalid_action_remaps": 0,
+          "kpis": {
+            "avg_resolution_time_min": 4800.169475042181,
+            "avg_response_time_min": 3685.492771386035,
+            "resolution_rate": 1.0,
+            "total_spent": 288402.11405617726,
+            "total_weighted_closure_hours": 1069.157747741062
+          },
+          "objective_score": -289732.24611056916,
+          "seed": 96,
+          "sim_time": 15658.458399050627,
+          "success": true,
+          "terminal_outcome": "SUCCESS",
+          "total_reward": -22288.256726400978,
+          "valid_action_ratio": 0.710533159947991,
+          "wall_time_s": 3.7091291998513043
+        },
+        {
+          "invalid_action_count": 0,
+          "invalid_action_remaps": 0,
+          "kpis": {
+            "avg_resolution_time_min": 444.0856608187545,
+            "avg_response_time_min": 116.4687147747389,
+            "resolution_rate": 1.0,
+            "total_spent": 75334.10189013307,
+            "total_weighted_closure_hours": 60.86934124289062
+          },
+          "objective_score": -75460.89846421295,
+          "seed": 97,
+          "sim_time": 3955.633970219182,
+          "success": true,
+          "terminal_outcome": "SUCCESS",
+          "total_reward": -4993.576697542469,
+          "valid_action_ratio": 0.23945945945946057,
+          "wall_time_s": 0.8624871000647545
+        },
+        {
+          "invalid_action_count": 0,
+          "invalid_action_remaps": 0,
+          "kpis": {
+            "avg_resolution_time_min": 1465.753987533326,
+            "avg_response_time_min": 704.3928233070559,
+            "resolution_rate": 1.0,
+            "total_spent": 153190.9616217267,
+            "total_weighted_closure_hours": 200.90601322456786
+          },
+          "objective_score": -153513.8965469961,
+          "seed": 98,
+          "sim_time": 7321.734722691724,
+          "success": true,
+          "terminal_outcome": "SUCCESS",
+          "total_reward": -11798.390952145986,
+          "valid_action_ratio": 0.35028901734104134,
+          "wall_time_s": 1.6673544002696872
+        },
+        {
+          "invalid_action_count": 0,
+          "invalid_action_remaps": 0,
+          "kpis": {
+            "avg_resolution_time_min": 622.7637848292505,
+            "avg_response_time_min": 43.8138620269437,
+            "resolution_rate": 1.0,
+            "total_spent": 168848.99837712437,
+            "total_weighted_closure_hours": 117.37021464748611
+          },
+          "objective_score": -169096.63772592173,
+          "seed": 99,
+          "sim_time": 7816.1480489924115,
+          "success": true,
+          "terminal_outcome": "SUCCESS",
+          "total_reward": -12759.894353885775,
+          "valid_action_ratio": 0.20410256410256347,
+          "wall_time_s": 1.912509999703616
+        }
+      ],
+      "runs": 20,
+      "stage_name": "stage_1_easy",
+      "stage_scenario_name": "clatsop_landslide_ops",
+      "success_rate": 1.0,
+      "successes": 20,
+      "timesteps": 10000
+    },
+    {
+      "avg_invalid_action_count": 0,
+      "avg_invalid_action_remaps": 0,
+      "avg_objective_score": -233155.00358067857,
+      "avg_sim_time": 10339.780560647263,
+      "avg_total_reward": -18209.178676291875,
+      "avg_valid_action_ratio": 0.5276973817555032,
+      "avg_wall_time_s": 2.511243229988031,
+      "episodes": [
+        {
+          "invalid_action_count": 0,
+          "invalid_action_remaps": 0,
+          "kpis": {
+            "avg_resolution_time_min": 4431.198133465949,
+            "avg_response_time_min": 3534.552304157428,
+            "resolution_rate": 1.0,
+            "total_spent": 323914.41841279075,
+            "total_weighted_closure_hours": 986.9755309273157
+          },
+          "objective_score": -325108.16692554235,
+          "seed": 80,
+          "sim_time": 12406.37890945605,
+          "success": true,
+          "terminal_outcome": "SUCCESS",
+          "total_reward": -26272.568189584592,
+          "valid_action_ratio": 0.7494082840236675,
+          "wall_time_s": 3.1625131997279823
+        },
+        {
+          "invalid_action_count": 0,
+          "invalid_action_remaps": 0,
+          "kpis": {
+            "avg_resolution_time_min": 2239.4476872866335,
+            "avg_response_time_min": 1515.628650978189,
+            "resolution_rate": 1.0,
+            "total_spent": 284738.89162418956,
+            "total_weighted_closure_hours": 537.1688519238205
+          },
+          "objective_score": -285458.3060950891,
+          "seed": 81,
+          "sim_time": 10934.737138542603,
+          "success": true,
+          "terminal_outcome": "SUCCESS",
+          "total_reward": -22672.391470723676,
+          "valid_action_ratio": 0.571451876019577,
+          "wall_time_s": 2.8975305003114045
+        },
+        {
+          "invalid_action_count": 0,
+          "invalid_action_remaps": 0,
+          "kpis": {
+            "avg_resolution_time_min": 1735.9367256190758,
+            "avg_response_time_min": 750.6804796705328,
+            "resolution_rate": 1.0,
+            "total_spent": 229723.21290858375,
+            "total_weighted_closure_hours": 297.4238256560684
+          },
+          "objective_score": -230206.25285196514,
+          "seed": 82,
+          "sim_time": 11136.967063518814,
+          "success": true,
+          "terminal_outcome": "SUCCESS",
+          "total_reward": -17706.965908108283,
+          "valid_action_ratio": 0.3383486238532051,
+          "wall_time_s": 2.7049756003543735
+        },
+        {
+          "invalid_action_count": 0,
+          "invalid_action_remaps": 0,
+          "kpis": {
+            "avg_resolution_time_min": 1529.6453457794582,
+            "avg_response_time_min": 950.5128442530257,
+            "resolution_rate": 1.0,
+            "total_spent": 109543.46492551365,
+            "total_weighted_closure_hours": 209.66338872817107
+          },
+          "objective_score": -109837.01303227455,
+          "seed": 83,
+          "sim_time": 5033.083081963989,
+          "success": true,
+          "terminal_outcome": "SUCCESS",
+          "total_reward": -7920.442577972653,
+          "valid_action_ratio": 0.5027829313543595,
+          "wall_time_s": 1.3009383999742568
+        },
+        {
+          "invalid_action_count": 0,
+          "invalid_action_remaps": 0,
+          "kpis": {
+            "avg_resolution_time_min": 4703.149672893427,
+            "avg_response_time_min": 3798.333441381096,
+            "resolution_rate": 1.0,
+            "total_spent": 273269.91542880377,
+            "total_weighted_closure_hours": 1047.5482038091293
+          },
+          "objective_score": -274535.99768189713,
+          "seed": 84,
+          "sim_time": 13112.042957055879,
+          "success": true,
+          "terminal_outcome": "SUCCESS",
+          "total_reward": -21369.9337218406,
+          "valid_action_ratio": 0.7689364957918893,
+          "wall_time_s": 3.1406596996821463
+        },
+        {
+          "invalid_action_count": 0,
+          "invalid_action_remaps": 0,
+          "kpis": {
+            "avg_resolution_time_min": 4130.459540082079,
+            "avg_response_time_min": 3094.246468217658,
+            "resolution_rate": 1.0,
+            "total_spent": 436724.01375800476,
+            "total_weighted_closure_hours": 1061.5281018010942
+          },
+          "objective_score": -438068.98609986453,
+          "seed": 85,
+          "sim_time": 17006.654403521083,
+          "success": true,
+          "terminal_outcome": "SUCCESS",
+          "total_reward": -36699.68903813608,
+          "valid_action_ratio": 0.6746376811594235,
+          "wall_time_s": 4.164372199680656
+        },
+        {
+          "invalid_action_count": 0,
+          "invalid_action_remaps": 0,
+          "kpis": {
+            "avg_resolution_time_min": 3443.813070143171,
+            "avg_response_time_min": 2245.8314842493332,
+            "resolution_rate": 1.0,
+            "total_spent": 237925.80448680447,
+            "total_weighted_closure_hours": 531.035975416077
+          },
+          "objective_score": -238656.74550549034,
+          "seed": 86,
+          "sim_time": 11994.30259618709,
+          "success": true,
+          "terminal_outcome": "SUCCESS",
+          "total_reward": -18221.398568479097,
+          "valid_action_ratio": 0.5481292517006926,
+          "wall_time_s": 2.850071699824184
+        },
+        {
+          "invalid_action_count": 0,
+          "invalid_action_remaps": 0,
+          "kpis": {
+            "avg_resolution_time_min": 1380.3642442177415,
+            "avg_response_time_min": 863.2098191607603,
+            "resolution_rate": 1.0,
+            "total_spent": 181570.99354073533,
+            "total_weighted_closure_hours": 307.45312932876493
+          },
+          "objective_score": -182027.18386129662,
+          "seed": 87,
+          "sim_time": 8924.231473951244,
+          "success": true,
+          "terminal_outcome": "SUCCESS",
+          "total_reward": -13963.572949677098,
+          "valid_action_ratio": 0.5009126466753575,
+          "wall_time_s": 1.8327306997962296
+        },
+        {
+          "invalid_action_count": 0,
+          "invalid_action_remaps": 0,
+          "kpis": {
+            "avg_resolution_time_min": 1671.0258044996733,
+            "avg_response_time_min": 1101.3966118870226,
+            "resolution_rate": 1.0,
+            "total_spent": 264323.89711254905,
+            "total_weighted_closure_hours": 458.08387387351047
+          },
+          "objective_score": -264954.42563597136,
+          "seed": 88,
+          "sim_time": 10346.678972927351,
+          "success": true,
+          "terminal_outcome": "SUCCESS",
+          "total_reward": -21236.090763452972,
+          "valid_action_ratio": 0.5278752436647212,
+          "wall_time_s": 2.4600676000118256
+        },
+        {
+          "invalid_action_count": 0,
+          "invalid_action_remaps": 0,
+          "kpis": {
+            "avg_resolution_time_min": 1416.1949922257177,
+            "avg_response_time_min": 834.4165464879111,
+            "resolution_rate": 1.0,
+            "total_spent": 174896.60650398585,
+            "total_weighted_closure_hours": 218.37726780120565
+          },
+          "objective_score": -175210.91008958043,
+          "seed": 89,
+          "sim_time": 5755.579067602661,
+          "success": true,
+          "terminal_outcome": "SUCCESS",
+          "total_reward": -14115.870376713001,
+          "valid_action_ratio": 0.4373287671232886,
+          "wall_time_s": 1.384803299792111
+        },
+        {
+          "invalid_action_count": 0,
+          "invalid_action_remaps": 0,
+          "kpis": {
+            "avg_resolution_time_min": 3181.5816973213114,
+            "avg_response_time_min": 2364.8220793216783,
+            "resolution_rate": 1.0,
+            "total_spent": 217906.92468077104,
+            "total_weighted_closure_hours": 654.1331969692617
+          },
+          "objective_score": -218742.73068298926,
+          "seed": 90,
+          "sim_time": 10900.36831493747,
+          "success": true,
+          "terminal_outcome": "SUCCESS",
+          "total_reward": -16446.343432635556,
+          "valid_action_ratio": 0.6423728813559276,
+          "wall_time_s": 2.828266500029713
+        },
+        {
+          "invalid_action_count": 0,
+          "invalid_action_remaps": 0,
+          "kpis": {
+            "avg_resolution_time_min": 2295.168955867402,
+            "avg_response_time_min": 1675.6153314267592,
+            "resolution_rate": 1.0,
+            "total_spent": 259318.23072095177,
+            "total_weighted_closure_hours": 550.5345268807275
+          },
+          "objective_score": -260045.40215518966,
+          "seed": 91,
+          "sim_time": 10598.21444142937,
+          "success": true,
+          "terminal_outcome": "SUCCESS",
+          "total_reward": -20740.814027596844,
+          "valid_action_ratio": 0.6390338164251217,
+          "wall_time_s": 2.449559800326824
+        },
+        {
+          "invalid_action_count": 0,
+          "invalid_action_remaps": 0,
+          "kpis": {
+            "avg_resolution_time_min": 804.6018407363978,
+            "avg_response_time_min": 226.4545535352404,
+            "resolution_rate": 1.0,
+            "total_spent": 146883.86028516368,
+            "total_weighted_closure_hours": 165.4261384554034
+          },
+          "objective_score": -147188.68013958028,
+          "seed": 92,
+          "sim_time": 8363.622957671243,
+          "success": true,
+          "terminal_outcome": "SUCCESS",
+          "total_reward": -10192.391263058034,
+          "valid_action_ratio": 0.2588235294117651,
+          "wall_time_s": 2.091371100395918
+        },
+        {
+          "invalid_action_count": 0,
+          "invalid_action_remaps": 0,
+          "kpis": {
+            "avg_resolution_time_min": 4261.057319683774,
+            "avg_response_time_min": 3205.979650916245,
+            "resolution_rate": 1.0,
+            "total_spent": 303463.0442538207,
+            "total_weighted_closure_hours": 949.0795003375661
+          },
+          "objective_score": -304649.07156366075,
+          "seed": 93,
+          "sim_time": 14216.868570146415,
+          "success": true,
+          "terminal_outcome": "SUCCESS",
+          "total_reward": -24094.895400022364,
+          "valid_action_ratio": 0.602229965156804,
+          "wall_time_s": 3.4278335999697447
+        },
+        {
+          "invalid_action_count": 0,
+          "invalid_action_remaps": 0,
+          "kpis": {
+            "avg_resolution_time_min": 2060.9970752743834,
+            "avg_response_time_min": 1431.5868316413523,
+            "resolution_rate": 1.0,
+            "total_spent": 254805.30968538832,
+            "total_weighted_closure_hours": 423.7409986764132
+          },
+          "objective_score": -255369.41041328685,
+          "seed": 94,
+          "sim_time": 8421.583753326559,
+          "success": true,
+          "terminal_outcome": "SUCCESS",
+          "total_reward": -20896.291581446516,
+          "valid_action_ratio": 0.6111353711790445,
+          "wall_time_s": 2.2071268004365265
+        },
+        {
+          "invalid_action_count": 0,
+          "invalid_action_remaps": 0,
+          "kpis": {
+            "avg_resolution_time_min": 3336.1132469747067,
+            "avg_response_time_min": 2535.45062666229,
+            "resolution_rate": 1.0,
+            "total_spent": 264164.8568882246,
+            "total_weighted_closure_hours": 857.3811044724998
+          },
+          "objective_score": -265237.110032193,
+          "seed": 95,
+          "sim_time": 12892.322369753501,
+          "success": true,
+          "terminal_outcome": "SUCCESS",
+          "total_reward": -19793.795526414913,
+          "valid_action_ratio": 0.6761560693641627,
+          "wall_time_s": 3.3160270997323096
+        },
+        {
+          "invalid_action_count": 0,
+          "invalid_action_remaps": 0,
+          "kpis": {
+            "avg_resolution_time_min": 4800.169475042181,
+            "avg_response_time_min": 3685.492771386035,
+            "resolution_rate": 1.0,
+            "total_spent": 288402.11405617726,
+            "total_weighted_closure_hours": 1069.157747741062
+          },
+          "objective_score": -289732.24611056916,
+          "seed": 96,
+          "sim_time": 15658.458399050627,
+          "success": true,
+          "terminal_outcome": "SUCCESS",
+          "total_reward": -22288.256726400978,
+          "valid_action_ratio": 0.710533159947991,
+          "wall_time_s": 3.673007700126618
+        },
+        {
+          "invalid_action_count": 0,
+          "invalid_action_remaps": 0,
+          "kpis": {
+            "avg_resolution_time_min": 444.0856608187545,
+            "avg_response_time_min": 116.4687147747389,
+            "resolution_rate": 1.0,
+            "total_spent": 75334.10189013307,
+            "total_weighted_closure_hours": 60.86934124289062
+          },
+          "objective_score": -75460.89846421295,
+          "seed": 97,
+          "sim_time": 3955.633970219182,
+          "success": true,
+          "terminal_outcome": "SUCCESS",
+          "total_reward": -4993.576697542469,
+          "valid_action_ratio": 0.23945945945946057,
+          "wall_time_s": 0.8686472000554204
+        },
+        {
+          "invalid_action_count": 0,
+          "invalid_action_remaps": 0,
+          "kpis": {
+            "avg_resolution_time_min": 1465.753987533326,
+            "avg_response_time_min": 704.3928233070559,
+            "resolution_rate": 1.0,
+            "total_spent": 153190.9616217267,
+            "total_weighted_closure_hours": 200.90601322456786
+          },
+          "objective_score": -153513.8965469961,
+          "seed": 98,
+          "sim_time": 7321.734722691724,
+          "success": true,
+          "terminal_outcome": "SUCCESS",
+          "total_reward": -11798.390952145986,
+          "valid_action_ratio": 0.35028901734104134,
+          "wall_time_s": 1.6485424996353686
+        },
+        {
+          "invalid_action_count": 0,
+          "invalid_action_remaps": 0,
+          "kpis": {
+            "avg_resolution_time_min": 622.7637848292505,
+            "avg_response_time_min": 43.8138620269437,
+            "resolution_rate": 1.0,
+            "total_spent": 168848.99837712437,
+            "total_weighted_closure_hours": 117.37021464748611
+          },
+          "objective_score": -169096.63772592173,
+          "seed": 99,
+          "sim_time": 7816.1480489924115,
+          "success": true,
+          "terminal_outcome": "SUCCESS",
+          "total_reward": -12759.894353885775,
+          "valid_action_ratio": 0.20410256410256347,
+          "wall_time_s": 1.8158193998970091
+        }
+      ],
+      "runs": 20,
+      "stage_name": "stage_1_easy",
+      "stage_scenario_name": "clatsop_landslide_ops",
+      "success_rate": 1.0,
+      "successes": 20,
+      "timesteps": 20000
+    },
+    {
+      "avg_invalid_action_count": 0,
+      "avg_invalid_action_remaps": 0,
+      "avg_objective_score": -233155.00358067857,
+      "avg_sim_time": 10339.780560647263,
+      "avg_total_reward": -18209.178676291875,
+      "avg_valid_action_ratio": 0.5276973817555032,
+      "avg_wall_time_s": 2.659151315060444,
+      "episodes": [
+        {
+          "invalid_action_count": 0,
+          "invalid_action_remaps": 0,
+          "kpis": {
+            "avg_resolution_time_min": 4431.198133465949,
+            "avg_response_time_min": 3534.552304157428,
+            "resolution_rate": 1.0,
+            "total_spent": 323914.41841279075,
+            "total_weighted_closure_hours": 986.9755309273157
+          },
+          "objective_score": -325108.16692554235,
+          "seed": 80,
+          "sim_time": 12406.37890945605,
+          "success": true,
+          "terminal_outcome": "SUCCESS",
+          "total_reward": -26272.568189584592,
+          "valid_action_ratio": 0.7494082840236675,
+          "wall_time_s": 3.1484854998998344
+        },
+        {
+          "invalid_action_count": 0,
+          "invalid_action_remaps": 0,
+          "kpis": {
+            "avg_resolution_time_min": 2239.4476872866335,
+            "avg_response_time_min": 1515.628650978189,
+            "resolution_rate": 1.0,
+            "total_spent": 284738.89162418956,
+            "total_weighted_closure_hours": 537.1688519238205
+          },
+          "objective_score": -285458.3060950891,
+          "seed": 81,
+          "sim_time": 10934.737138542603,
+          "success": true,
+          "terminal_outcome": "SUCCESS",
+          "total_reward": -22672.391470723676,
+          "valid_action_ratio": 0.571451876019577,
+          "wall_time_s": 3.139104299712926
+        },
+        {
+          "invalid_action_count": 0,
+          "invalid_action_remaps": 0,
+          "kpis": {
+            "avg_resolution_time_min": 1735.9367256190758,
+            "avg_response_time_min": 750.6804796705328,
+            "resolution_rate": 1.0,
+            "total_spent": 229723.21290858375,
+            "total_weighted_closure_hours": 297.4238256560684
+          },
+          "objective_score": -230206.25285196514,
+          "seed": 82,
+          "sim_time": 11136.967063518814,
+          "success": true,
+          "terminal_outcome": "SUCCESS",
+          "total_reward": -17706.965908108283,
+          "valid_action_ratio": 0.3383486238532051,
+          "wall_time_s": 2.8989657000638545
+        },
+        {
+          "invalid_action_count": 0,
+          "invalid_action_remaps": 0,
+          "kpis": {
+            "avg_resolution_time_min": 1529.6453457794582,
+            "avg_response_time_min": 950.5128442530257,
+            "resolution_rate": 1.0,
+            "total_spent": 109543.46492551365,
+            "total_weighted_closure_hours": 209.66338872817107
+          },
+          "objective_score": -109837.01303227455,
+          "seed": 83,
+          "sim_time": 5033.083081963989,
+          "success": true,
+          "terminal_outcome": "SUCCESS",
+          "total_reward": -7920.442577972653,
+          "valid_action_ratio": 0.5027829313543595,
+          "wall_time_s": 1.3632498001679778
+        },
+        {
+          "invalid_action_count": 0,
+          "invalid_action_remaps": 0,
+          "kpis": {
+            "avg_resolution_time_min": 4703.149672893427,
+            "avg_response_time_min": 3798.333441381096,
+            "resolution_rate": 1.0,
+            "total_spent": 273269.91542880377,
+            "total_weighted_closure_hours": 1047.5482038091293
+          },
+          "objective_score": -274535.99768189713,
+          "seed": 84,
+          "sim_time": 13112.042957055879,
+          "success": true,
+          "terminal_outcome": "SUCCESS",
+          "total_reward": -21369.9337218406,
+          "valid_action_ratio": 0.7689364957918893,
+          "wall_time_s": 3.358101399615407
+        },
+        {
+          "invalid_action_count": 0,
+          "invalid_action_remaps": 0,
+          "kpis": {
+            "avg_resolution_time_min": 4130.459540082079,
+            "avg_response_time_min": 3094.246468217658,
+            "resolution_rate": 1.0,
+            "total_spent": 436724.01375800476,
+            "total_weighted_closure_hours": 1061.5281018010942
+          },
+          "objective_score": -438068.98609986453,
+          "seed": 85,
+          "sim_time": 17006.654403521083,
+          "success": true,
+          "terminal_outcome": "SUCCESS",
+          "total_reward": -36699.68903813608,
+          "valid_action_ratio": 0.6746376811594235,
+          "wall_time_s": 4.1998446001671255
+        },
+        {
+          "invalid_action_count": 0,
+          "invalid_action_remaps": 0,
+          "kpis": {
+            "avg_resolution_time_min": 3443.813070143171,
+            "avg_response_time_min": 2245.8314842493332,
+            "resolution_rate": 1.0,
+            "total_spent": 237925.80448680447,
+            "total_weighted_closure_hours": 531.035975416077
+          },
+          "objective_score": -238656.74550549034,
+          "seed": 86,
+          "sim_time": 11994.30259618709,
+          "success": true,
+          "terminal_outcome": "SUCCESS",
+          "total_reward": -18221.398568479097,
+          "valid_action_ratio": 0.5481292517006926,
+          "wall_time_s": 3.2602014001458883
+        },
+        {
+          "invalid_action_count": 0,
+          "invalid_action_remaps": 0,
+          "kpis": {
+            "avg_resolution_time_min": 1380.3642442177415,
+            "avg_response_time_min": 863.2098191607603,
+            "resolution_rate": 1.0,
+            "total_spent": 181570.99354073533,
+            "total_weighted_closure_hours": 307.45312932876493
+          },
+          "objective_score": -182027.18386129662,
+          "seed": 87,
+          "sim_time": 8924.231473951244,
+          "success": true,
+          "terminal_outcome": "SUCCESS",
+          "total_reward": -13963.572949677098,
+          "valid_action_ratio": 0.5009126466753575,
+          "wall_time_s": 2.3267866000533104
+        },
+        {
+          "invalid_action_count": 0,
+          "invalid_action_remaps": 0,
+          "kpis": {
+            "avg_resolution_time_min": 1671.0258044996733,
+            "avg_response_time_min": 1101.3966118870226,
+            "resolution_rate": 1.0,
+            "total_spent": 264323.89711254905,
+            "total_weighted_closure_hours": 458.08387387351047
+          },
+          "objective_score": -264954.42563597136,
+          "seed": 88,
+          "sim_time": 10346.678972927351,
+          "success": true,
+          "terminal_outcome": "SUCCESS",
+          "total_reward": -21236.090763452972,
+          "valid_action_ratio": 0.5278752436647212,
+          "wall_time_s": 2.6782392002642155
+        },
+        {
+          "invalid_action_count": 0,
+          "invalid_action_remaps": 0,
+          "kpis": {
+            "avg_resolution_time_min": 1416.1949922257177,
+            "avg_response_time_min": 834.4165464879111,
+            "resolution_rate": 1.0,
+            "total_spent": 174896.60650398585,
+            "total_weighted_closure_hours": 218.37726780120565
+          },
+          "objective_score": -175210.91008958043,
+          "seed": 89,
+          "sim_time": 5755.579067602661,
+          "success": true,
+          "terminal_outcome": "SUCCESS",
+          "total_reward": -14115.870376713001,
+          "valid_action_ratio": 0.4373287671232886,
+          "wall_time_s": 1.580985200125724
+        },
+        {
+          "invalid_action_count": 0,
+          "invalid_action_remaps": 0,
+          "kpis": {
+            "avg_resolution_time_min": 3181.5816973213114,
+            "avg_response_time_min": 2364.8220793216783,
+            "resolution_rate": 1.0,
+            "total_spent": 217906.92468077104,
+            "total_weighted_closure_hours": 654.1331969692617
+          },
+          "objective_score": -218742.73068298926,
+          "seed": 90,
+          "sim_time": 10900.36831493747,
+          "success": true,
+          "terminal_outcome": "SUCCESS",
+          "total_reward": -16446.343432635556,
+          "valid_action_ratio": 0.6423728813559276,
+          "wall_time_s": 3.1411930001340806
+        },
+        {
+          "invalid_action_count": 0,
+          "invalid_action_remaps": 0,
+          "kpis": {
+            "avg_resolution_time_min": 2295.168955867402,
+            "avg_response_time_min": 1675.6153314267592,
+            "resolution_rate": 1.0,
+            "total_spent": 259318.23072095177,
+            "total_weighted_closure_hours": 550.5345268807275
+          },
+          "objective_score": -260045.40215518966,
+          "seed": 91,
+          "sim_time": 10598.21444142937,
+          "success": true,
+          "terminal_outcome": "SUCCESS",
+          "total_reward": -20740.814027596844,
+          "valid_action_ratio": 0.6390338164251217,
+          "wall_time_s": 2.688649000134319
+        },
+        {
+          "invalid_action_count": 0,
+          "invalid_action_remaps": 0,
+          "kpis": {
+            "avg_resolution_time_min": 804.6018407363978,
+            "avg_response_time_min": 226.4545535352404,
+            "resolution_rate": 1.0,
+            "total_spent": 146883.86028516368,
+            "total_weighted_closure_hours": 165.4261384554034
+          },
+          "objective_score": -147188.68013958028,
+          "seed": 92,
+          "sim_time": 8363.622957671243,
+          "success": true,
+          "terminal_outcome": "SUCCESS",
+          "total_reward": -10192.391263058034,
+          "valid_action_ratio": 0.2588235294117651,
+          "wall_time_s": 2.1324625997804105
+        },
+        {
+          "invalid_action_count": 0,
+          "invalid_action_remaps": 0,
+          "kpis": {
+            "avg_resolution_time_min": 4261.057319683774,
+            "avg_response_time_min": 3205.979650916245,
+            "resolution_rate": 1.0,
+            "total_spent": 303463.0442538207,
+            "total_weighted_closure_hours": 949.0795003375661
+          },
+          "objective_score": -304649.07156366075,
+          "seed": 93,
+          "sim_time": 14216.868570146415,
+          "success": true,
+          "terminal_outcome": "SUCCESS",
+          "total_reward": -24094.895400022364,
+          "valid_action_ratio": 0.602229965156804,
+          "wall_time_s": 3.454989599995315
+        },
+        {
+          "invalid_action_count": 0,
+          "invalid_action_remaps": 0,
+          "kpis": {
+            "avg_resolution_time_min": 2060.9970752743834,
+            "avg_response_time_min": 1431.5868316413523,
+            "resolution_rate": 1.0,
+            "total_spent": 254805.30968538832,
+            "total_weighted_closure_hours": 423.7409986764132
+          },
+          "objective_score": -255369.41041328685,
+          "seed": 94,
+          "sim_time": 8421.583753326559,
+          "success": true,
+          "terminal_outcome": "SUCCESS",
+          "total_reward": -20896.291581446516,
+          "valid_action_ratio": 0.6111353711790445,
+          "wall_time_s": 2.2324013002216816
+        },
+        {
+          "invalid_action_count": 0,
+          "invalid_action_remaps": 0,
+          "kpis": {
+            "avg_resolution_time_min": 3336.1132469747067,
+            "avg_response_time_min": 2535.45062666229,
+            "resolution_rate": 1.0,
+            "total_spent": 264164.8568882246,
+            "total_weighted_closure_hours": 857.3811044724998
+          },
+          "objective_score": -265237.110032193,
+          "seed": 95,
+          "sim_time": 12892.322369753501,
+          "success": true,
+          "terminal_outcome": "SUCCESS",
+          "total_reward": -19793.795526414913,
+          "valid_action_ratio": 0.6761560693641627,
+          "wall_time_s": 3.3925330000929534
+        },
+        {
+          "invalid_action_count": 0,
+          "invalid_action_remaps": 0,
+          "kpis": {
+            "avg_resolution_time_min": 4800.169475042181,
+            "avg_response_time_min": 3685.492771386035,
+            "resolution_rate": 1.0,
+            "total_spent": 288402.11405617726,
+            "total_weighted_closure_hours": 1069.157747741062
+          },
+          "objective_score": -289732.24611056916,
+          "seed": 96,
+          "sim_time": 15658.458399050627,
+          "success": true,
+          "terminal_outcome": "SUCCESS",
+          "total_reward": -22288.256726400978,
+          "valid_action_ratio": 0.710533159947991,
+          "wall_time_s": 3.7696064999327064
+        },
+        {
+          "invalid_action_count": 0,
+          "invalid_action_remaps": 0,
+          "kpis": {
+            "avg_resolution_time_min": 444.0856608187545,
+            "avg_response_time_min": 116.4687147747389,
+            "resolution_rate": 1.0,
+            "total_spent": 75334.10189013307,
+            "total_weighted_closure_hours": 60.86934124289062
+          },
+          "objective_score": -75460.89846421295,
+          "seed": 97,
+          "sim_time": 3955.633970219182,
+          "success": true,
+          "terminal_outcome": "SUCCESS",
+          "total_reward": -4993.576697542469,
+          "valid_action_ratio": 0.23945945945946057,
+          "wall_time_s": 0.8910113000310957
+        },
+        {
+          "invalid_action_count": 0,
+          "invalid_action_remaps": 0,
+          "kpis": {
+            "avg_resolution_time_min": 1465.753987533326,
+            "avg_response_time_min": 704.3928233070559,
+            "resolution_rate": 1.0,
+            "total_spent": 153190.9616217267,
+            "total_weighted_closure_hours": 200.90601322456786
+          },
+          "objective_score": -153513.8965469961,
+          "seed": 98,
+          "sim_time": 7321.734722691724,
+          "success": true,
+          "terminal_outcome": "SUCCESS",
+          "total_reward": -11798.390952145986,
+          "valid_action_ratio": 0.35028901734104134,
+          "wall_time_s": 1.6501049003563821
+        },
+        {
+          "invalid_action_count": 0,
+          "invalid_action_remaps": 0,
+          "kpis": {
+            "avg_resolution_time_min": 622.7637848292505,
+            "avg_response_time_min": 43.8138620269437,
+            "resolution_rate": 1.0,
+            "total_spent": 168848.99837712437,
+            "total_weighted_closure_hours": 117.37021464748611
+          },
+          "objective_score": -169096.63772592173,
+          "seed": 99,
+          "sim_time": 7816.1480489924115,
+          "success": true,
+          "terminal_outcome": "SUCCESS",
+          "total_reward": -12759.894353885775,
+          "valid_action_ratio": 0.20410256410256347,
+          "wall_time_s": 1.8761114003136754
+        }
+      ],
+      "runs": 20,
+      "stage_name": "stage_1_easy",
+      "stage_scenario_name": "clatsop_landslide_ops",
+      "success_rate": 1.0,
+      "successes": 20,
+      "timesteps": 20480
+    }
+  ]
+}

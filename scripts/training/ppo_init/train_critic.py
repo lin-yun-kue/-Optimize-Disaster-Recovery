@@ -29,7 +29,7 @@ from scripts.training.mlp.ml_dispatch import DispatchScoringConfig, DispatchScor
 
 @dataclass
 class PPOConfig:
-    scenario_name: str = "clatsop_landslide_curriculum"
+    scenario_name: str = "clatsop_landslide_ops"
     max_visible_disasters: int = 5
     sorting_strategy: str = "most_progress"
     total_timesteps: int = 20_000

@@ -18,6 +18,9 @@ from SimPyTest.gym import DisasterResponseGym, ObsType
 from SimPyTest.policies import Policy
 from benchmark import create_scenario_config
 
+import statistics
+import time
+
 
 def flatten_observation(observation: ObsType) -> npt.NDArray[np.float32]:
     return np.concatenate(
@@ -673,6 +676,90 @@ def train_behavior_cloning(
         metadata=metadata,
     )
     return trained, TrainingHistory(epochs=history_rows)
+
+def run_policy_episode(
+    policy: TrainedDispatchPolicy,
+    *,
+    seed: int,
+    deterministic: bool,
+    controller_name: str,
+    scenario_name: str,
+    max_visible_disasters: int,
+    sorting_strategy: str = "most_progress",
+) -> dict[str, Any]:
+    env = DisasterResponseGym(
+        max_visible_disasters=max_visible_disasters,
+        sorting_strategy=sorting_strategy,
+        scenario_config=create_scenario_config(scenario_name, gis_config=None),
+        controller_name=controller_name,
+        scenario_name=scenario_name,
+    )
+    observation, info = env.reset(seed=seed)
+    terminated = False
+    truncated = False
+    total_reward = 0.0
+    total_valid_action_ratio = 0.0
+    decisions = 0
+    started_at = time.perf_counter()
+
+    while not terminated and not truncated:
+        action = policy.predict(observation, deterministic=deterministic)
+        observation, reward, terminated, truncated, info = env.step(action)
+        total_reward += float(reward)
+        total_valid_action_ratio += float(info["valid_action_count"]) / float(env.max_slots)
+        decisions += 1
+
+    return {
+        "seed": seed,
+        "success": bool(info["is_success"]),
+        "sim_time": float(info["summary"].non_idle_time),
+        "wall_time_s": time.perf_counter() - started_at,
+        "total_reward": total_reward,
+        "objective_score": float(info["objective_score"]),
+        "terminal_outcome": info["terminal_outcome"],
+        "invalid_action_count": int(info["invalid_action_count"]),
+        "invalid_action_remaps": int(info["invalid_action_remaps"]),
+        "valid_action_ratio": total_valid_action_ratio / decisions if decisions > 0 else 0.0,
+    }
+
+
+def evaluate_model(
+    policy: TrainedDispatchPolicy,
+    seeds: list[int],
+    deterministic: bool,
+    controller_name: str,
+    *,
+    scenario_name: str,
+    max_visible_disasters: int,
+    sorting_strategy: str = "most_progress",
+) -> dict[str, Any]:
+    episodes: list[dict[str, Any]] = []
+    for seed in seeds:
+        episode = run_policy_episode(
+            policy,
+            seed=seed,
+            deterministic=deterministic,
+            controller_name=controller_name,
+            scenario_name=scenario_name,
+            max_visible_disasters=max_visible_disasters,
+            sorting_strategy=sorting_strategy,
+        )
+        episodes.append(episode)
+        print(f"Evaluation seed {seed} success: {episode['success']}")
+    successes = [episode for episode in episodes if episode["success"]]
+    return {
+        "episodes": episodes,
+        "success_rate": len(successes) / len(episodes) if episodes else 0.0,
+        "avg_objective_score": statistics.mean(episode["objective_score"] for episode in episodes) if episodes else 0.0,
+        "avg_total_reward": statistics.mean(episode["total_reward"] for episode in episodes) if episodes else 0.0,
+        "avg_sim_time": statistics.mean(episode["sim_time"] for episode in episodes) if episodes else 0.0,
+        "avg_wall_time_s": statistics.mean(episode["wall_time_s"] for episode in episodes) if episodes else 0.0,
+        "avg_invalid_action_count": statistics.mean(episode["invalid_action_count"] for episode in episodes) if episodes else 0.0,
+        "avg_invalid_action_remaps": statistics.mean(episode["invalid_action_remaps"] for episode in episodes) if episodes else 0.0,
+        "avg_valid_action_ratio": statistics.mean(episode["valid_action_ratio"] for episode in episodes) if episodes else 0.0,
+        "successes": len(successes),
+        "runs": len(episodes),
+    }
 
 
 def write_json(path: str | Path, payload: dict[str, Any]) -> None:

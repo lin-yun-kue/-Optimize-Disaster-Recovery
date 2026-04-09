@@ -28,7 +28,7 @@ from scripts.training.mlp.ml_dispatch import DispatchScoringConfig, DispatchScor
 
 @dataclass
 class PPOConfig:
-    scenario_name: str = "clatsop_landslide_curriculum"
+    scenario_name: str = "clatsop_landslide_ops"
     max_visible_disasters: int = 5
     sorting_strategy: str = "most_progress"
     total_timesteps: int = 20_000
@@ -39,6 +39,7 @@ class PPOConfig:
     gae_lambda: float = 0.95
     clip_epsilon: float = 0.2
     entropy_coef: float = 0.005
+    value_coef: float = 0.5
     max_grad_norm: float = 0.5
     learning_rate: float = 1e-3
     seed: int = 0
@@ -163,6 +164,7 @@ def select_device() -> str:
 
 
 def obs_to_tensors(observation: ObsType, device: torch.device) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+
     current_resource = torch.from_numpy(observation["current_resource"]).float().unsqueeze(0).to(device)
     global_state = torch.from_numpy(observation["global_state"]).float().unsqueeze(0).to(device)
     candidate_disasters = torch.from_numpy(observation["candidate_disasters"]).float().unsqueeze(0).to(device)
@@ -346,6 +348,7 @@ def ppo_actor_update(
     total_samples = batch.actions.shape[0]
     indices = np.arange(total_samples)
     policy_loss_total = 0.0
+    value_loss_total = 0.0
     entropy_total = 0.0
     batches = 0
 
@@ -361,29 +364,41 @@ def ppo_actor_update(
                 batch.candidate_disasters[mb_idx],
                 batch.valid_actions[mb_idx],
             )
+            # print("global_state", batch.global_state[mb_idx])
+            # print("candidate_disaster", batch.candidate_disasters[mb_idx])
+            # print(batch.valid_actions[mb_idx].sum(dim=1)[:10])
+
             new_log_probs = dist.log_prob(batch.actions[mb_idx])
             entropy = dist.entropy().mean()
+            values = agent.value(
+                batch.current_resource[mb_idx],
+                batch.global_state[mb_idx],
+                batch.candidate_disasters[mb_idx],
+                batch.valid_actions[mb_idx],
+            )
 
             ratio = torch.exp(new_log_probs - batch.old_log_probs[mb_idx])
             surr1 = ratio * batch.advantages[mb_idx]
             surr2 = torch.clamp(ratio, 1.0 - config.clip_epsilon, 1.0 + config.clip_epsilon) * batch.advantages[mb_idx]
             policy_loss = -torch.min(surr1, surr2).mean()
+            value_loss = torch.nn.functional.mse_loss(values, batch.returns[mb_idx])
 
-            loss = policy_loss - (config.entropy_coef * entropy)
+            loss = policy_loss + (config.value_coef * value_loss) - (config.entropy_coef * entropy)
 
             optimizer.zero_grad()
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(agent.actor.parameters(), config.max_grad_norm)
+            torch.nn.utils.clip_grad_norm_(agent.parameters(), config.max_grad_norm)
             optimizer.step()
 
             policy_loss_total += float(policy_loss.item())
+            value_loss_total += float(value_loss.item())
             entropy_total += float(entropy.item())
             batches += 1
 
     denom = max(batches, 1)
     return {
         "policy_loss": policy_loss_total / denom,
-        "value_loss": 0.0,
+        "value_loss": value_loss_total / denom,
         "entropy": entropy_total / denom,
     }
 
@@ -436,11 +451,7 @@ def train(config: PPOConfig) -> Path:
     agent = PPOAgent(config).to(device)
 
     critic_metadata = load_critic_checkpoint(agent.critic, config.critic_checkpoint, device)
-    agent.critic.eval()
-    for param in agent.critic.parameters():
-        param.requires_grad = False
-
-    optimizer = Adam(agent.actor.parameters(), lr=config.learning_rate)
+    optimizer = Adam(agent.parameters(), lr=config.learning_rate)
     buffer = TransitionBuffer()
 
     timestep = 0
@@ -510,7 +521,7 @@ def train(config: PPOConfig) -> Path:
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Train actor from scratch with a fixed critic loaded from a previous PPO checkpoint.")
+    parser = argparse.ArgumentParser(description="Train actor from scratch with critic initialized from a previous PPO checkpoint.")
     parser.add_argument("--scenario-name", type=str, default=PPOConfig.scenario_name)
     parser.add_argument("--max-visible-disasters", type=int, default=PPOConfig.max_visible_disasters)
     parser.add_argument("--sorting-strategy", type=str, default=PPOConfig.sorting_strategy)
@@ -523,6 +534,7 @@ if __name__ == "__main__":
     parser.add_argument("--gae-lambda", type=float, default=PPOConfig.gae_lambda)
     parser.add_argument("--clip-epsilon", type=float, default=PPOConfig.clip_epsilon)
     parser.add_argument("--entropy-coef", type=float, default=PPOConfig.entropy_coef)
+    parser.add_argument("--value-coef", type=float, default=PPOConfig.value_coef)
     parser.add_argument("--max-grad-norm", type=float, default=PPOConfig.max_grad_norm)
     parser.add_argument("--seed", type=int, default=PPOConfig.seed)
     parser.add_argument("--device", type=str, default="auto")
@@ -554,6 +566,7 @@ if __name__ == "__main__":
         gae_lambda=args.gae_lambda,
         clip_epsilon=args.clip_epsilon,
         entropy_coef=args.entropy_coef,
+        value_coef=args.value_coef,
         max_grad_norm=args.max_grad_norm,
         seed=args.seed,
         device=select_device() if args.device == "auto" else args.device,

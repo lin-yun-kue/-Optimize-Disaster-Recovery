@@ -1,5 +1,5 @@
-from SimPyTest.gym import CURRENT_RESOURCE_FEATURES, DISASTER_FEATURES, GLOBAL_STATE_FEATURES, DisasterResponseGym, InfoType, ObsType
 from __future__ import annotations
+from SimPyTest.gym import CURRENT_RESOURCE_FEATURES, DISASTER_FEATURES, GLOBAL_STATE_FEATURES, DisasterResponseGym, InfoType, ObsType
 
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone

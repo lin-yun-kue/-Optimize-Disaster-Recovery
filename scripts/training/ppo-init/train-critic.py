@@ -2,14 +2,12 @@ from __future__ import annotations
 
 # python -m scripts.training.ppo-init.train-critic --timesteps 20000
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 import argparse
 import json
 from pathlib import Path
-import time
 from typing import Any
-import statistics
 
 import numpy as np
 import torch
@@ -55,7 +53,6 @@ class PPOConfig:
     log_interval: int = 1024
     save_dir: str = "experiment_results/ppo_custom"
     actor_checkpoint: str | None = None
-    checkpoint_seeds: list[int] = field(default_factory=lambda: list(range(80, 100)))
 
 
 @dataclass
@@ -189,52 +186,6 @@ def load_actor_checkpoint(actor: DispatchActor, checkpoint_path: str, device: to
     state_dict = payload["state_dict"]
     actor.scorer.load_state_dict(state_dict)
     return dict(payload.get("metadata", {}))
-
-
-def predict_action(agent: PPOAgent, observation: ObsType, device: torch.device, deterministic: bool) -> int:
-    with torch.no_grad():
-        cr, gs, cd, va = obs_to_tensors(observation, device)
-        dist = agent.action_distribution(cr, gs, cd, va)
-        if deterministic:
-            action = int(torch.argmax(dist.logits, dim=-1).item())
-        else:
-            action = int(dist.sample().item())
-    return action
-
-
-def evaluate_agent(agent: PPOAgent, config: PPOConfig, device: torch.device, deterministic: bool = True) -> dict[str, Any]:
-    episodes: list[dict[str, float | bool | int | str | None]] = []
-    for seed in config.checkpoint_seeds:
-        env = make_env(config, controller_name="ppo_custom_checkpoint")
-        observation, _ = env.reset(seed=seed)
-        terminated = False
-        truncated = False
-        total_reward = 0.0
-        info: dict[str, Any] = {}
-
-        while not terminated and not truncated:
-            action = predict_action(agent, observation, device, deterministic)
-            observation, reward, terminated, truncated, info = env.step(action)
-            total_reward += float(reward)
-
-        episodes.append(
-            {
-                "seed": int(seed),
-                "success": bool(info["is_success"]),
-                "objective_score": float(info["objective_score"]),
-                "total_reward": total_reward,
-                "terminal_outcome": info["terminal_outcome"],
-            }
-        )
-        print(f"Checkpoint eval seed={seed} success={bool(info['is_success'])}")
-
-    successes = [episode for episode in episodes if bool(episode["success"])]
-    return {
-        "episodes": episodes,
-        "success_rate": len(successes) / len(episodes) if episodes else 0.0,
-        "avg_objective_score": statistics.mean(float(episode["objective_score"]) for episode in episodes) if episodes else 0.0,
-        "avg_total_reward": statistics.mean(float(episode["total_reward"]) for episode in episodes) if episodes else 0.0,
-    }
 
 
 def collect_rollout(
@@ -407,18 +358,9 @@ def write_json(path: Path, payload: dict[str, Any]) -> None:
     path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
 
 
-def format_duration(seconds: float) -> str:
-    total_seconds = max(0, int(round(seconds)))
-    hours, remainder = divmod(total_seconds, 3600)
-    minutes, secs = divmod(remainder, 60)
-    return f"{hours:02d}:{minutes:02d}:{secs:02d}"
-
-
 def train(config: PPOConfig) -> Path:
     np.random.seed(config.seed)
     torch.manual_seed(config.seed)
-    train_started_at_utc = datetime.now(timezone.utc)
-    train_started_perf = time.perf_counter()
     device_name = config.device if config.device != "auto" else select_device()
     device = torch.device(device_name)
 
@@ -473,9 +415,6 @@ def train(config: PPOConfig) -> Path:
                 f"mean_ep_reward={record['mean_episode_reward']:.2f}"
             )
 
-    total_wall_time_s = time.perf_counter() - train_started_perf
-    train_finished_at_utc = datetime.now(timezone.utc)
-    checkpoint_metrics = evaluate_agent(agent, config, device, deterministic=True)
     save_checkpoint(run_dir, agent, optimizer, config, timestep, actor_metadata)
     write_json(
         run_dir / "training_metrics.json",
@@ -483,22 +422,10 @@ def train(config: PPOConfig) -> Path:
             "config": asdict(config),
             "actor_checkpoint": config.actor_checkpoint,
             "device": device_name,
-            "train_started_at_utc": train_started_at_utc.isoformat(),
-            "train_finished_at_utc": train_finished_at_utc.isoformat(),
-            "total_wall_time_s": total_wall_time_s,
-            "total_wall_time_hms": format_duration(total_wall_time_s),
-            "checkpoint_metrics": checkpoint_metrics,
             "training_log": training_log,
         },
     )
-    print(
-        "Checkpoint | "
-        f"obj={checkpoint_metrics['avg_objective_score']:.2f} | "
-        f"success={checkpoint_metrics['success_rate'] * 100:.1f}% | "
-        f"reward={checkpoint_metrics['avg_total_reward']:.2f}"
-    )
     print(f"Saved custom PPO artifacts to {run_dir}")
-    print(f"Training wall time: {total_wall_time_s:.2f}s ({format_duration(total_wall_time_s)})")
     return run_dir
 
 

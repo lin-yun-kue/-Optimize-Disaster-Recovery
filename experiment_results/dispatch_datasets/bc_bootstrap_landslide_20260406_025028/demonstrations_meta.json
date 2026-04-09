@@ -1,0 +1,29 @@
+{
+  "difficulties": [
+    "clatsop_landslide_ops"
+  ],
+  "difficulty": "clatsop_landslide_ops",
+  "episodes": [
+    {
+      "included_in_dataset": true,
+      "seed": 0,
+      "steps": 262,
+      "success": false,
+      "teacher_policy": "tournament",
+      "terminal_outcome": "FAIL_DEADLOCK"
+    }
+  ],
+  "max_visible_disasters": 5,
+  "num_examples": 262,
+  "seed_values": [
+    0
+  ],
+  "successful_episodes_only": false,
+  "teacher_counts": {
+    "tournament": 262
+  },
+  "teachers": [
+    "tournament"
+  ],
+  "train_seeds": 1
+}

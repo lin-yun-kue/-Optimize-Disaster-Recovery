@@ -1,229 +1,130 @@
 """
 Calendar and seasonal system for multi-year disaster simulation.
-Handles time progression, seasonal probabilities, and weather patterns.
+Handles time progression, seasonal probabilities
 """
 
 from __future__ import annotations
-from datetime import datetime, timedelta
-from enum import Enum, auto
-from dataclasses import dataclass
-from typing import Callable
-import random
+from collections.abc import Generator
+from enum import Enum
+from math import floor
+
+import simpy
+from SimPyTest.simulation import Disaster, Landslide, WildfireDebris
+
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from SimPyTest.engine import SimPySimulationEngine
 
 
 class Season(Enum):
     """Seasons of the year."""
-    WINTER = auto()
-    SPRING = auto()
-    SUMMER = auto()
-    FALL = auto()
 
-
-@dataclass
-class SeasonalFactors:
-    """Factors that vary by season for a disaster type."""
-    base_rate: float  # Base probability per day
-    seasonal_multiplier: dict[Season, float]  # Multiplier by season
-    size_distribution: dict[str, tuple[float, float]]  # (min, max) for different sizes
-    
-    def get_rate_for_date(self, date: datetime, weather_noise: float = 0.0) -> float:
-        """Get the adjusted rate for a specific date."""
-        season = self._get_season(date)
-        base = self.base_rate * self.seasonal_multiplier.get(season, 1.0)
-        # Add weather noise (gaussian, typically ±20%)
-        return max(0, base * (1 + weather_noise))
-    
-    @staticmethod
-    def _get_season(date: datetime) -> Season:
-        month = date.month
-        if month in [12, 1, 2]:
-            return Season.WINTER
-        elif month in [3, 4, 5]:
-            return Season.SPRING
-        elif month in [6, 7, 8]:
-            return Season.SUMMER
-        else:
-            return Season.FALL
+    WINTER = -0.09
+    SPRING = 0.16
+    SUMMER = 0.41
+    FALL = 0.66
 
 
 class SimulationCalendar:
     """
     Calendar system that manages time progression and seasonal patterns.
+    start_date: float Fraction of year to start at
+    duration_years: float Number of years to go after start_date
     """
-    
-    def __init__(self, start_date: datetime, duration_years: int):
-        self.start_date = start_date
-        self.current_date = start_date
-        self.end_date = start_date + timedelta(days=365 * duration_years)
-        self.duration_years = duration_years
-        
-        # Simulation speed: 1 sim minute = X real seconds
-        # For 5-year sims, we'll run at accelerated time
-        self.time_acceleration = 60  # 1 real second = 1 sim hour by default
-        
-        # Weather state (persistent across days)
-        self.weather_state = {
-            "rain_intensity": 0.0,  # 0-1, affects landslide/flood
-            "temperature": 15.0,    # Celsius, affects snow/ice
-            "wind_speed": 0.0,      # Affects wildfire spread
-            "drought_index": 0.0,   # 0-1, affects wildfire risk
-        }
-        
-    def advance_time(self, hours: float) -> datetime:
-        """Backward-compatible hour-based advancement."""
-        return self.advance_time_minutes(hours * 60.0)
 
-    def advance_time_minutes(self, minutes: float) -> datetime:
+    def __init__(self, start_date: float, duration_years: float):
+        self.current_date: float = start_date
+        self.end_date: float = start_date + duration_years
+        self.duration_years: float = duration_years
+
+    def advance_time_minutes(self, minutes: float) -> float:
         """Advance the calendar by specified real-world minutes."""
-        self.current_date += timedelta(minutes=minutes)
-        self._update_weather()
+        self.current_date += minutes / 525600
+        self.current_date %= 1
         return self.current_date
-    
-    def _update_weather(self):
-        """Update weather state based on season and random variation."""
-        season = self.get_season()
-        
-        # Seasonal baselines
-        if season == Season.WINTER:
-            base_temp = 5.0
-            base_rain = 0.4
-            base_drought = 0.1
-        elif season == Season.SPRING:
-            base_temp = 12.0
-            base_rain = 0.5
-            base_drought = 0.2
-        elif season == Season.SUMMER:
-            base_temp = 22.0
-            base_rain = 0.1
-            base_drought = 0.6
-        else:  # FALL
-            base_temp = 15.0
-            base_rain = 0.6
-            base_drought = 0.3
-        
-        # Random walk with mean reversion
-        noise = random.gauss(0, 0.1)
-        self.weather_state["temperature"] = 0.9 * self.weather_state["temperature"] + 0.1 * base_temp + noise * 5
-        self.weather_state["rain_intensity"] = max(0, min(1, 0.8 * self.weather_state["rain_intensity"] + 0.2 * base_rain + noise))
-        self.weather_state["drought_index"] = max(0, min(1, 0.9 * self.weather_state["drought_index"] + 0.1 * base_drought + noise * 0.1))
-        self.weather_state["wind_speed"] = max(0, random.gauss(15, 10))  # km/h
-    
+
     def get_season(self) -> Season:
-        """Get current season."""
-        month = self.current_date.month
-        if month in [12, 1, 2]:
-            return Season.WINTER
-        elif month in [3, 4, 5]:
+        """
+        Get current season.
+
+        Winter: 0.91 -> 0.16
+        Spring: 0.16 -> 0.41
+        Summer: 0.41 -> 0.66
+        Fall: 0.66 -> 0.91
+        """
+
+        if 0.16 < self.current_date <= 0.41:
             return Season.SPRING
-        elif month in [6, 7, 8]:
+        elif 0.41 < self.current_date <= 0.66:
             return Season.SUMMER
-        else:
+        elif 0.66 < self.current_date <= 0.91:
             return Season.FALL
-    
+        else:
+            return Season.WINTER
+
     def get_year_progress(self) -> float:
         """Get progress through current year (0-1)."""
-        year_start = datetime(self.current_date.year, 1, 1)
-        year_end = datetime(self.current_date.year + 1, 1, 1)
-        return (self.current_date - year_start).total_seconds() / (year_end - year_start).total_seconds()
-    
-    def is_complete(self) -> bool:
-        """Check if simulation duration is complete."""
-        return self.current_date >= self.end_date
-    
-    def get_weather_factor(self, disaster_type: str) -> float:
-        """Get weather modifier for a specific disaster type."""
-        if disaster_type == "landslide":
-            return self.weather_state["rain_intensity"]
-        elif disaster_type == "snow":
-            # High chance when temp < 2°C
-            if self.weather_state["temperature"] < 2:
-                return 1.0
-            elif self.weather_state["temperature"] < 5:
-                return 0.5
-            else:
-                return 0.0
-        elif disaster_type in ("wildfire_debris", "wildfire"):
-            return self.weather_state["drought_index"] * (1 + self.weather_state["wind_speed"] / 50)
-        elif disaster_type == "flood":
-            return self.weather_state["rain_intensity"]
-        return 0.0
-    
-    def get_simulated_hours(self) -> float:
-        """Get total simulated hours elapsed."""
-        return (self.current_date - self.start_date).total_seconds() / 3600
-    
-    def get_year(self) -> int:
-        """Get current simulation year (1-indexed)."""
-        return (self.current_date - self.start_date).days // 365 + 1
-    
-    def __str__(self) -> str:
-        return f"{self.current_date.strftime('%Y-%m-%d %H:%M')} (Year {self.get_year()})"
+        return self.current_date
 
 
-# Pre-defined realistic seasonal patterns for Oregon
-# These are synthetic but based on Oregon's climate patterns
-OREGON_DISASTER_PATTERNS = {
-    "landslide": SeasonalFactors(
-        # Clatsop is rain-dominant with frequent slide/flood closures in wet season.
-        # Base rate remains moderate but winter/fall are emphasized.
-        base_rate=0.035,
-        seasonal_multiplier={
-            Season.WINTER: 1.2,
-            Season.SPRING: 0.8,
-            Season.SUMMER: 0.15,
-            Season.FALL: 1.0,
-        },
-        size_distribution={
-            # Debris volume priors (cubic yards proxy). Includes rare "major"
-            # events informed by Clatsop hazard-plan examples (thousands of yd^3).
-            "small": (50, 200),
-            "medium": (200, 800),
-            "large": (800, 2500),
-            "major": (3000, 5000),
-        }
-    ),
-    "snow": SeasonalFactors(
-        # Coastal Clatsop is mild; snow closures exist but are less frequent than
-        # in inland/mountain districts. Keep short-duration events common in winter.
-        base_rate=0.05,
-        seasonal_multiplier={
-            Season.WINTER: 1.0,
-            Season.SPRING: 0.2,
-            Season.SUMMER: 0.0,
-            Season.FALL: 0.05,
-        },
-        size_distribution={
-            "light": (1, 4),     # closure/restriction hours
-            "moderate": (4, 12),
-            "heavy": (12, 24),
-        }
-    ),
-    "wildfire_debris": SeasonalFactors(
-        base_rate=0.015,
-        seasonal_multiplier={
-            Season.WINTER: 0.0,
-            Season.SPRING: 0.1,
-            Season.SUMMER: 1.0,
-            Season.FALL: 0.7,
-        },
-        size_distribution={
-            "small": (20, 100),   # cubic yards of debris
-            "medium": (100, 400),
-            "large": (400, 1200),
-        }
-    ),
-    "flood": SeasonalFactors(
-        base_rate=0.045,
-        seasonal_multiplier={
-            Season.WINTER: 1.1,
-            Season.SPRING: 0.8,
-            Season.SUMMER: 0.1,
-            Season.FALL: 0.5,
-        },
-        size_distribution={
-            "minor": (12, 48),   # hours of closure
-            "moderate": (48, 168),
-            "major": (168, 336),  # multi-day/week closures
-        }
-    ),
-}
+# ============================================================================
+# MARK: Seasonal Spawn
+# ============================================================================
+
+
+def add_seasonal_disasters(engine: SimPySimulationEngine) -> Generator[simpy.Event, object, None]:
+    calendar = engine.calendar
+    rng = engine.rng
+
+    max_sim_minutes = calendar.duration_years * 525600
+    sim_year_span = floor(calendar.current_date + calendar.duration_years) + 1
+
+    disaster_classes: dict[str, type[Disaster]] = {cls.disaster_type: cls for cls in (Landslide, WildfireDebris)}
+    profiles = engine.scenario_config.seasonal_spawn
+
+    event_times: list[tuple[float, str, int]] = []
+
+    for year in range(sim_year_span):
+        for season_enum in Season:
+            for disaster_type, profile in profiles.items():
+                count_range = profile.event_count_range_by_season.get(season_enum.name.lower(), (0, 0))
+                disaster_count = rng.randint(count_range[0], count_range[1])
+                for _ in range(disaster_count):
+                    # Year time in season
+                    base_time = (rng.uniform(0.0, 0.25) + season_enum.value) % 1
+                    if base_time < calendar.current_date:
+                        base_time += 1
+                    event_time = (base_time - calendar.current_date) * 525600
+
+                    event_size = profile.size_range_by_season.get(season_enum.name.lower(), (1, 1))
+                    event_size = rng.randint(event_size[0], event_size[1])
+
+                    event_times.append((event_time, disaster_type, event_size))
+
+    event_times.sort(key=lambda x: x[0])
+
+    for event in event_times:
+        scheduled_time = event[0]
+        disaster_type = event[1]
+        event_size = event[2]
+
+        if scheduled_time < engine.env.now:
+            continue
+
+        if scheduled_time > engine.env.now:
+            yield engine.env.timeout(scheduled_time - engine.env.now)
+        if engine.env.now >= max_sim_minutes:
+            break
+
+        disaster_cls = disaster_classes[disaster_type]
+        profile = profiles[disaster_type]
+
+        location = engine.generate_disaster_locations(1)[0]
+        disaster = disaster_cls.spawn_from_seasonal(
+            engine=engine,
+            location=location,
+            size=event_size,
+        )
+        engine.disaster_store.put(disaster)
+        engine.record_disaster_created_metrics(disaster)

@@ -4,26 +4,137 @@ Adapted from the GIS-based disaster simulation project.
 """
 
 from __future__ import annotations
-import geopandas as gpd
-import networkx as nx
-from shapely.geometry import LineString, Point
-from pyproj import Transformer
-from typing import TYPE_CHECKING, Any, NotRequired, TypedDict, cast
-import numpy as np
-from functools import lru_cache
-import hashlib
-from rtree import index
-import pandas as pd
+from typing import TYPE_CHECKING, Any, cast
+from typing import Protocol, TypedDict
 
 if TYPE_CHECKING:
     from pathlib import Path
+    import geopandas as gpd
+    import networkx as nx
 
 # Coordinate systems
 CRS_WGS = "EPSG:4326"  # Latitude/Longitude
 CRS_UTM = "EPSG:32610"  # UTM Zone 10N (for Oregon/Washington coast)
 
+# Derived on 2026-03-12 from maps/tl_2024_41007_roads/tl_2024_41007_roads.shp.
+CLATSOP_ROAD_BOUNDS_UTM = (
+    421772.53,
+    5069105.82,
+    472174.56,
+    5120526.74,
+)
+CLATSOP_ROAD_SPAN_METERS = (
+    CLATSOP_ROAD_BOUNDS_UTM[2] - CLATSOP_ROAD_BOUNDS_UTM[0],
+    CLATSOP_ROAD_BOUNDS_UTM[3] - CLATSOP_ROAD_BOUNDS_UTM[1],
+)
+CLATSOP_CENTER_UTM = (
+    (CLATSOP_ROAD_BOUNDS_UTM[2] + CLATSOP_ROAD_BOUNDS_UTM[0]) / 2,
+    (CLATSOP_ROAD_BOUNDS_UTM[3] + CLATSOP_ROAD_BOUNDS_UTM[1]) / 2,
+)
+CLATSOP_LOCAL_COORD_MAX = int(max(CLATSOP_ROAD_SPAN_METERS))
+
+METERS_PER_MILE = 1609.344
+MINUTES_PER_HOUR = 60.0
+
+
+DEFAULT_POPULATION_IMPACT_PRIORS: dict[str, Any] = {
+    # Early Clatsop-oriented exposure priors (Tier B/C blend from local research).
+    "daily_traffic": {
+        "interstate": 50_000,
+        "highway": 12_000,
+        "secondary": 1_500,
+        "local": 500,
+    },
+    "vehicle_occupancy": 1.5,
+    "truck_impact_gamma": 0.35,
+    "default_truck_pct": 0.08,
+    "size_to_road_miles": 0.01,
+    "size_to_duration_hours": 0.08,
+}
+
+
+def meters_to_miles(distance_meters: float) -> float:
+    return distance_meters / METERS_PER_MILE
+
+
+def travel_minutes_from_distance(distance_miles: float, speed_mph: float) -> float:
+    if speed_mph <= 0:
+        return 0.0
+    return (distance_miles / speed_mph) * MINUTES_PER_HOUR
+
+
+def longlat_to_utm(lon: float, lat: float) -> tuple[float, float]:
+    from pyproj import Transformer
+
+    transformer = Transformer.from_crs(CRS_WGS, CRS_UTM, always_xy=True)
+    x, y = transformer.transform(lon, lat)
+    return float(x), float(y)
+
+
+class DepotInput(TypedDict):
+    Longitude: float
+    Latitude: float
+    Name: str
+
+
+class LandfillInput(TypedDict):
+    Longitude: float
+    Latitude: float
+    Name: str
+
+
+class Depot(DepotInput):
+    node: tuple[float, float] | None
+    x: float | None
+    y: float | None
+
+
+class Landfill(LandfillInput):
+    node: tuple[float, float] | None
+    x: float | None
+    y: float | None
+
+
+def convert_depot_landfill_to_utm(item: DepotInput | LandfillInput) -> DepotInput | LandfillInput:
+    utmLon, utmLat = longlat_to_utm(item["Longitude"], item["Latitude"])
+    return {
+        "Longitude": utmLon,
+        "Latitude": utmLat,
+        "Name": item["Name"],
+    }
+
+
+DEPOTS: list[DepotInput] = [
+    {"Longitude": 428495.75624829275, "Latitude": 5112533.074041501, "Name": "ODOT Warrenton"},
+    {"Longitude": 428548.1482968839, "Latitude": 5092684.929353949, "Name": "ODOT Seaside"},
+    {"Longitude": 436566.9131651465, "Latitude": 5084385.5770570915, "Name": "ODOT Necanium"},
+]
+LANDFILLS: list[LandfillInput] = [
+    {"Longitude": 445631.17350180657, "Latitude": 5084703.954872417, "Name": "Random Landfill"},
+    {"Longitude": 437613.4524863608, "Latitude": 5114147.315132233, "Name": "Astoria Recology"},
+    {"Longitude": 429643.82256163796, "Latitude": 5089134.164202773, "Name": "Seaside Knife River Quarry"},
+]
+
+
+class _CoordinateSampler(Protocol):
+    def uniform(self, a: float, b: float) -> float: ...
+
+
+def sample_clatsop_local_utm(rng: _CoordinateSampler) -> tuple[float, float]:
+    return (
+        rng.uniform(CLATSOP_ROAD_BOUNDS_UTM[2], CLATSOP_ROAD_BOUNDS_UTM[0]),
+        rng.uniform(CLATSOP_ROAD_BOUNDS_UTM[3], CLATSOP_ROAD_BOUNDS_UTM[1]),
+    )
+
+
+# ----------------------------------------------------------------------------
+# MARK: Road Network functions
+# ----------------------------------------------------------------------------
+
 
 def load_roads(filepath: str | Path, enabled_types: list[str] | None = None) -> gpd.GeoDataFrame:
+    import geopandas as gpd
+
     """
     Load and optionally filter roads from a shapefile.
 
@@ -66,6 +177,9 @@ def get_road_network_stats(roads_gdf: gpd.GeoDataFrame) -> dict[str, Any]:
 
 
 def build_road_graph(roads_gdf: gpd.GeoDataFrame) -> nx.Graph[tuple[float, float]]:
+    from shapely.geometry import LineString
+    import networkx as nx
+
     """
     Build a NetworkX graph from UTM-projected roads GeoDataFrame.
 
@@ -95,6 +209,9 @@ def build_road_graph(roads_gdf: gpd.GeoDataFrame) -> nx.Graph[tuple[float, float
 
 
 def snap_to_graph(lon: float, lat: float, G: nx.Graph[tuple[float, float]]) -> tuple[float, float]:
+    from pyproj import Transformer
+    from shapely.geometry import Point
+
     """
     Snap a WGS84 coordinate to the nearest node in the road graph.
 
@@ -115,61 +232,14 @@ def snap_to_graph(lon: float, lat: float, G: nx.Graph[tuple[float, float]]) -> t
     return nearest_node
 
 
-def get_graph_fingerprint(G: nx.Graph[tuple[float, float]]) -> str:
-    """
-    Generate a content-based fingerprint for a road graph.
-
-    This creates a hash based on the graph's nodes, edges, and weights,
-    ensuring that identical road networks have the same fingerprint
-    regardless of object identity.
-
-    Args:
-        G: Road graph
-
-    Returns:
-        SHA256 hash string representing the graph content
-    """
-    # Create a deterministic representation of the graph
-    graph_data = []
-
-    # Add nodes (sorted for deterministic order)
-    for node in sorted(G.nodes()):
-        graph_data.append(f"node:{node[0]:.6f},{node[1]:.6f}")
-
-    # Add edges with weights (sorted for deterministic order)
-    for u, v, data in sorted(G.edges(data=True)):
-        weight = data.get("length", 0)
-        graph_data.append(f"edge:{u[0]:.6f},{u[1]:.6f}-{v[0]:.6f},{v[1]:.6f}:{weight:.6f}")
-
-    # Create hash
-    graph_string = "|".join(graph_data)
-    return hashlib.sha256(graph_string.encode()).hexdigest()[:16]
-
-
-# Global cache for road distances
-_road_distance_cache: dict[tuple[str, tuple[float, float], tuple[float, float]], float] = {}
-
-
-def clear_road_distance_cache() -> None:
-    """Clear the road distance cache."""
-    global _road_distance_cache
-    _road_distance_cache.clear()
-
-
-def get_cache_stats() -> dict[str, int]:
-    """Get statistics about the road distance cache."""
-    return {
-        "cache_size": len(_road_distance_cache),
-        "max_cache_size": 50000,
-    }
-
-
 def get_road_distance(
     G: nx.Graph[tuple[float, float]],
     node1: tuple[float, float],
     node2: tuple[float, float],
     gis_config: GISConfig | None = None,
 ) -> float:
+    import networkx as nx
+
     """
     Calculate shortest path distance along roads between two nodes.
 
@@ -189,39 +259,15 @@ def get_road_distance(
             return cached_distance
         print(".", end="", flush=True)
 
-    # Fall back to global cache
-    graph_fingerprint = get_graph_fingerprint(G)
-    global_cache_key = (graph_fingerprint, node1, node2)
-
-    if global_cache_key in _road_distance_cache:
-        distance = _road_distance_cache[global_cache_key]
-        # Also cache in GIS config if provided
-        if gis_config is not None:
-            gis_config.cache_distance(node1, node2, distance)
-        return distance
-
     # Calculate the distance
     try:
         distance = nx.shortest_path_length(G, source=node1, target=node2, weight="length")
-
-        # Cache in both places
-        if len(_road_distance_cache) > 50000:
-            keys_to_remove = list(_road_distance_cache.keys())[:10000]
-            for key in keys_to_remove:
-                del _road_distance_cache[key]
-        _road_distance_cache[global_cache_key] = distance
 
         if gis_config is not None:
             gis_config.cache_distance(node1, node2, distance)
 
         return distance
     except nx.NetworkXNoPath:
-        # Cache the infinity result
-        if len(_road_distance_cache) > 50000:
-            keys_to_remove = list(_road_distance_cache.keys())[:10000]
-            for key in keys_to_remove:
-                del _road_distance_cache[key]
-        _road_distance_cache[global_cache_key] = float("inf")
 
         if gis_config is not None:
             gis_config.cache_distance(node1, node2, float("inf"))
@@ -229,9 +275,7 @@ def get_road_distance(
         return float("inf")
 
 
-def get_road_path(
-    G: nx.Graph[tuple[float, float]], node1: tuple[float, float], node2: tuple[float, float]
-) -> list[tuple[float, float]]:
+def get_road_path(G: nx.Graph[tuple[float, float]], node1: tuple[float, float], node2: tuple[float, float]) -> list[tuple[float, float]]:
     """
     Get the sequence of nodes along the shortest path.
 
@@ -254,6 +298,8 @@ class RoadNodeSpatialIndex:
     """R-tree spatial index for fast nearest road node queries."""
 
     def __init__(self, G: nx.Graph[tuple[float, float]]):
+        from rtree import index
+
         """
         Build R-tree index from road graph nodes.
 
@@ -304,26 +350,6 @@ class RoadNodeSpatialIndex:
 
 
 # GIS configuration
-class Depot(TypedDict):
-    Longitude: float
-    Latitude: float
-    Name: str
-    numExc: int
-    numTrucks: int
-    color: str
-    node: NotRequired[tuple[float, float]]
-    x: NotRequired[float]
-    y: NotRequired[float]
-
-
-class Landfill(TypedDict):
-    Label: str
-    Longitude: float
-    Latitude: float
-    Name: str
-    node: NotRequired[tuple[float, float]]
-    x: NotRequired[float]
-    y: NotRequired[float]
 
 
 class GISConfig:
@@ -333,8 +359,8 @@ class GISConfig:
         self,
         roads_gdf: gpd.GeoDataFrame,
         road_graph: nx.Graph[tuple[float, float]],
-        depots: list[Depot] | None = None,
-        landfills: list[Landfill] | None = None,
+        depots: list[DepotInput] | None = None,
+        landfills: list[LandfillInput] | None = None,
     ):
         """
         Initialize GIS configuration.
@@ -345,23 +371,21 @@ class GISConfig:
             depots: List of depot definitions with Longitude, Latitude, Name, etc.
             landfills: List of landfill definitions with Longitude, Latitude, Name, etc.
         """
-        self.depots = depots or []
-        self.landfills = landfills or []
+        self.depots: list[Depot] = [Depot(**depot, x=None, y=None, node=None) for depot in depots or DEPOTS]
+        self.landfills: list[Landfill] = [Landfill(**landfill, x=None, y=None, node=None) for landfill in landfills or LANDFILLS]
 
         # These will be populated when the graph is built
         self.roads_gdf: gpd.GeoDataFrame | None = roads_gdf
         self.road_graph: nx.Graph[tuple[float, float]] = road_graph
 
         # Initialize distance cache for this GIS configuration
-        self._distance_cache: dict[tuple[str, tuple[float, float], tuple[float, float]], float] = {}
-        self._graph_fingerprint: str | None = None
+        self._distance_cache: dict[tuple[tuple[float, float], tuple[float, float]], float] = {}
         self._max_cache_size = 50000
 
         # Initialize spatial index for fast nearest node queries
         self._spatial_index: RoadNodeSpatialIndex | None = None
 
         self.snap_locations()
-        self.get_graph_fingerprint()
 
     def load_road_network(self) -> nx.Graph[tuple[float, float]]:
         """Load the road network and build the graph."""
@@ -390,29 +414,18 @@ class GISConfig:
     def snap_locations(self) -> None:
         """Snap all depot and landfill locations to the road graph."""
         for location in self.depots + self.landfills:
-            node = snap_to_graph(location["Longitude"], location["Latitude"], self.road_graph)
+            node = snap_to_graph(float(location["Longitude"]), float(location["Latitude"]), self.road_graph)
             location["node"] = node
             location["x"], location["y"] = node
 
-    def get_graph_fingerprint(self) -> str:
-        """Get or compute the fingerprint of the road graph."""
-        if self._graph_fingerprint is None and self.road_graph is not None:
-            self._graph_fingerprint = get_graph_fingerprint(self.road_graph)
-        return self._graph_fingerprint or ""
-
     def get_distance_from_cache(self, node1: tuple[float, float], node2: tuple[float, float]) -> float | None:
         """Get a distance from the cache, or None if not cached."""
-        if not self._graph_fingerprint:
-            return None
-        cache_key = (self._graph_fingerprint, node1, node2)
+        cache_key = (node1, node2)
         return self._distance_cache.get(cache_key)
 
     def cache_distance(self, node1: tuple[float, float], node2: tuple[float, float], distance: float) -> None:
         """Cache a distance calculation."""
-        if not self._graph_fingerprint:
-            return
-
-        cache_key = (self._graph_fingerprint, node1, node2)
+        cache_key = (node1, node2)
 
         # Limit cache size
         if len(self._distance_cache) >= self._max_cache_size:
@@ -432,112 +445,115 @@ class GISConfig:
         return {
             "cache_size": len(self._distance_cache),
             "max_cache_size": self._max_cache_size,
-            "graph_fingerprint": self.get_graph_fingerprint(),
         }
 
 
-def get_graph_connected_components(G: nx.Graph) -> list[set]:
+def get_graph_connected_components(G: nx.Graph[tuple[float, float]]) -> list[set[tuple[float, float]]]:
+    import networkx as nx
+
     """
     Get all connected components in the graph.
-    
+
     Args:
         G: Road graph
-        
+
     Returns:
         List of sets, where each set contains nodes in a connected component
     """
     return list(nx.connected_components(G))
 
 
-def get_largest_connected_component(G: nx.Graph) -> nx.Graph:
+def get_largest_connected_component(G: nx.Graph[tuple[float, float]]) -> nx.Graph[tuple[float, float]]:
+    import networkx as nx
+
     """
     Extract the largest connected component from the graph.
-    
+
     This is useful after pruning to ensure the network remains fully connected.
-    
+
     Args:
         G: Road graph
-        
+
     Returns:
         Subgraph containing only the largest connected component
     """
     if G.number_of_nodes() == 0:
         return G
-    
+
     largest_cc = max(nx.connected_components(G), key=len)
     return G.subgraph(largest_cc).copy()
 
 
-def remove_dead_end_nodes(G: nx.Graph, iterations: int = 1) -> nx.Graph:
+def remove_dead_end_nodes(G: nx.Graph[tuple[float, float]], iterations: int = 1) -> nx.Graph[tuple[float, float]]:
     """
     Remove dead-end nodes (degree 1) from the graph.
-    
+
     This simplifies the network by removing spurs and cul-de-sacs while
     maintaining connectivity between major nodes.
-    
+
     Args:
         G: Road graph
         iterations: Number of passes to remove dead ends (higher = more aggressive)
-        
+
     Returns:
         Simplified graph with dead ends removed
     """
     G_simplified = G.copy()
-    
+
     for _ in range(iterations):
         # Find nodes with degree 1 (dead ends)
         dead_ends = [node for node in G_simplified.nodes() if G_simplified.degree(node) == 1]
-        
+
         if not dead_ends:
             break
-            
+
         # Remove dead end nodes
         G_simplified.remove_nodes_from(dead_ends)
-    
+
     return G_simplified
 
 
-def simplify_graph_by_merging_degree_2_nodes(G: nx.Graph) -> nx.Graph:
+def simplify_graph_by_merging_degree_2_nodes(G: nx.Graph[tuple[float, float]]) -> nx.Graph[tuple[float, float]]:
     """
     Simplify graph by merging consecutive degree-2 nodes.
-    
+
     This reduces the graph size while maintaining the overall topology
     by replacing long chains of nodes with single edges.
-    
+
     Args:
         G: Road graph
-        
+
     Returns:
         Simplified graph
     """
     G_simplified = G.copy()
-    
+
     # Find all degree-2 nodes
     degree_2_nodes = [node for node in G_simplified.nodes() if G_simplified.degree(node) == 2]
-    
+
     for node in degree_2_nodes:
         if node not in G_simplified:
             continue  # Already removed
-            
+
         neighbors = list(G_simplified.neighbors(node))
         if len(neighbors) != 2:
             continue
-            
+
         u, v = neighbors
-        
+
         # Get edge data
         edge_data_u = G_simplified.get_edge_data(node, u)
         edge_data_v = G_simplified.get_edge_data(node, v)
-        
+
         # Calculate combined length
-        length_u = edge_data_u.get('length', 0) if edge_data_u else 0
-        length_v = edge_data_v.get('length', 0) if edge_data_v else 0
+        length_u = edge_data_u.get("length", 0) if edge_data_u else 0
+        length_v = edge_data_v.get("length", 0) if edge_data_v else 0
         combined_length = length_u + length_v
-        
+
         # Remove the degree-2 node and add direct edge between neighbors
         G_simplified.remove_node(node)
         G_simplified.add_edge(u, v, length=combined_length)
-    
+
     return G_simplified
 
 
@@ -547,44 +563,48 @@ def prune_roads_maintaining_connectivity(
     primary_types: list[str] | None = None,
     secondary_types: list[str] | None = None,
 ) -> gpd.GeoDataFrame:
+    import geopandas as gpd
+    import networkx as nx
+    import pandas as pd
+
     """
     Prune road network while maintaining connectivity between critical points.
-    
+
     Strategy:
     1. Start with primary road types (e.g., ['I', 'U', 'S'])
     2. Add secondary roads needed to connect critical points
     3. Keep only the largest connected component
     4. Optionally simplify by removing dead ends
-    
+
     Args:
         roads_gdf: GeoDataFrame with all road segments
         critical_points: List of (lon, lat) tuples for locations that must be connected
                          (e.g., depot and landfill locations)
         primary_types: Road types to always include (default: ['I', 'U', 'S'])
         secondary_types: Additional road types to use for connectivity (default: ['C', 'M'])
-        
+
     Returns:
         Pruned GeoDataFrame with maintained connectivity
     """
     if primary_types is None:
-        primary_types = ['I', 'U', 'S']
+        primary_types = ["I", "U", "S"]
     if secondary_types is None:
-        secondary_types = ['C', 'M']
-    
+        secondary_types = ["C", "M"]
+
     # Start with primary roads
     primary_roads = roads_gdf[roads_gdf["RTTYP"].isin(primary_types)].copy()
-    
+
     if len(primary_roads) == 0:
         print("Warning: No primary roads found, using all roads")
         return roads_gdf
-    
+
     # Build graph from primary roads
-    G_primary = build_road_graph(primary_roads)
-    
+    G_primary = build_road_graph(cast(gpd.GeoDataFrame, primary_roads))
+
     # If we have critical points, ensure they're all connected
     if critical_points and len(critical_points) > 1:
         transformer = Transformer.from_crs(CRS_WGS, CRS_UTM, always_xy=True)
-        
+
         # Snap critical points to the graph
         snapped_points = []
         for lon, lat in critical_points:
@@ -594,11 +614,11 @@ def prune_roads_maintaining_connectivity(
             if len(G_primary.nodes()) > 0:
                 nearest = min(G_primary.nodes(), key=lambda n: point.distance(Point(n)))
                 snapped_points.append(nearest)
-        
+
         # Check if all snapped points are in the same component
         if len(snapped_points) > 1:
             components = list(nx.connected_components(G_primary))
-            
+
             # Group points by component
             point_components = {}
             for i, point in enumerate(snapped_points):
@@ -606,17 +626,17 @@ def prune_roads_maintaining_connectivity(
                     if point in component:
                         point_components[i] = j
                         break
-            
+
             # If points are in different components, we need to add more roads
             unique_components = set(point_components.values())
             if len(unique_components) > 1:
                 print(f"Critical points are in {len(unique_components)} separate components, adding connecting roads...")
-                
+
                 # Add secondary roads to try to connect components
                 secondary_roads = roads_gdf[roads_gdf["RTTYP"].isin(secondary_types)].copy()
                 combined_roads = gpd.GeoDataFrame(pd.concat([primary_roads, secondary_roads]).drop_duplicates(), crs=primary_roads.crs)
                 G_combined = build_road_graph(combined_roads)
-                
+
                 # Check if this connects everything
                 if nx.is_connected(G_combined):
                     print("Successfully connected all critical points using secondary roads")
@@ -626,13 +646,13 @@ def prune_roads_maintaining_connectivity(
                     print("Warning: Could not connect all critical points even with secondary roads")
                     print("Using largest connected component with all road types")
                     return roads_gdf
-    
+
     # Keep only the largest connected component
     G_largest = get_largest_connected_component(G_primary)
-    
+
     # Get nodes in the largest component
     nodes_in_largest = set(G_largest.nodes())
-    
+
     # Filter roads to only include those in the largest component
     # We need to check if both endpoints of each road segment are in the component
     def is_road_in_component(row):
@@ -644,14 +664,15 @@ def prune_roads_maintaining_connectivity(
                 if u in nodes_in_largest and v in nodes_in_largest:
                     return True
         return False
-    
+
     # This is a bit inefficient but works
-    primary_roads_copy = primary_roads.copy()
-    primary_roads_copy['in_component'] = primary_roads_copy.apply(is_road_in_component, axis=1)
-    result = primary_roads_copy[primary_roads_copy['in_component']].drop(columns=['in_component'])
-    
+    primary_roads_copy = cast(gpd.GeoDataFrame, primary_roads.copy())
+    primary_roads_copy["in_component"] = primary_roads_copy.apply(is_road_in_component, axis=1)
+    filtered = primary_roads_copy[primary_roads_copy["in_component"]]
+    result = cast(gpd.GeoDataFrame, filtered.drop(columns=["in_component"]))
+
     print(f"Pruned network: {len(roads_gdf)} -> {len(result)} segments ({(1 - len(result)/len(roads_gdf))*100:.1f}% reduction)")
-    
+
     return result
 
 
@@ -663,16 +684,16 @@ def load_and_prune_roads(
 ) -> gpd.GeoDataFrame:
     """
     Load roads and prune them while maintaining connectivity to depots and landfills.
-    
+
     This is the recommended way to load roads for simulation - it ensures all
     critical locations remain reachable while still reducing network complexity.
-    
+
     Args:
         filepath: Path to the road shapefile
         depots: List of depot dictionaries with 'Longitude' and 'Latitude' keys
         landfills: List of landfill dictionaries with 'Longitude' and 'Latitude' keys
         enabled_types: List of road types to include (default: ['I', 'U', 'S'])
-        
+
     Returns:
         Pruned GeoDataFrame with maintained connectivity
     """
@@ -680,7 +701,7 @@ def load_and_prune_roads(
     print(f"Loading road network from {filepath}...")
     roads_gdf = load_roads(filepath)
     print(f"  Loaded {len(roads_gdf)} road segments")
-    
+
     # Collect critical points
     critical_points = []
     if depots:
@@ -689,7 +710,7 @@ def load_and_prune_roads(
     if landfills:
         for landfill in landfills:
             critical_points.append((landfill["Longitude"], landfill["Latitude"]))
-    
+
     # Prune while maintaining connectivity
     if enabled_types:
         print(f"Pruning to road types: {enabled_types}")
@@ -704,6 +725,6 @@ def load_and_prune_roads(
         G = build_road_graph(roads_gdf)
         G_largest = get_largest_connected_component(G)
         print(f"Keeping largest connected component: {G_largest.number_of_nodes()} nodes, {G_largest.number_of_edges()} edges")
-        
+
         # Convert back to GeoDataFrame (this is tricky, simplified version)
         return roads_gdf

@@ -566,6 +566,8 @@ def prune_roads_maintaining_connectivity(
     import geopandas as gpd
     import networkx as nx
     import pandas as pd
+    from shapely.geometry import LineString, Point
+    from pyproj import Transformer
 
     """
     Prune road network while maintaining connectivity between critical points.
@@ -666,7 +668,7 @@ def prune_roads_maintaining_connectivity(
         return False
 
     # This is a bit inefficient but works
-    primary_roads_copy = cast(gpd.GeoDataFrame, primary_roads.copy())
+    primary_roads_copy = cast(gpd.GeoDataFrame, primary_roads.to_crs(CRS_UTM).copy())
     primary_roads_copy["in_component"] = primary_roads_copy.apply(is_road_in_component, axis=1)
     filtered = primary_roads_copy[primary_roads_copy["in_component"]]
     result = cast(gpd.GeoDataFrame, filtered.drop(columns=["in_component"]))

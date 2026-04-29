@@ -102,6 +102,8 @@ class SimPySimulationEngine:
         self.seed: int = seed
         self.rng: SimulationRNG = SimulationRNG(seed)
         self.track_metrics: bool = track_metrics
+        self._next_node_id: int = 0
+        self._next_disaster_id: int = 0
 
         self.scenario_config: ScenarioConfig = scenario_config
 
@@ -121,6 +123,7 @@ class SimPySimulationEngine:
         self.total_drive_time: float = 0.0
         self.tournament_decisions: list[tuple[float, str]] = []
         self.decision_log: list[int] = []
+        self.decision_state_signatures: list[tuple[int, str, float, float, float, tuple[tuple[int, str, float, float, int, int], ...]]] = []
         self.replay_buffer: Deque[int] = deque()
         self.branch_decision: int | None = None
         self.decisions_made: int = 0
@@ -181,6 +184,7 @@ class SimPySimulationEngine:
         self.last_terminal_outcome = None
         self.last_terminal_error = None
         self.pending_decision_resource = None
+        self.decision_state_signatures = []
         self._last_visualizer_update_time = None
 
     def _update_visualizer(self, force: bool = False) -> None:
@@ -266,6 +270,27 @@ class SimPySimulationEngine:
                     self.pending_decision_resource = resource
                     return None
 
+                all_active = list(self.disaster_store.items)
+                decision_signature = (
+                    resource.id,
+                    resource.resource_type.name,
+                    round(float(resource.location[0]), 3),
+                    round(float(resource.location[1]), 3),
+                    round(float(self.env.now), 6),
+                    tuple(
+                        sorted(
+                            (
+                                disaster.id,
+                                type(disaster).__name__,
+                                round(float(disaster.percent_remaining()), 6),
+                                round(float(disaster.get_scale()), 6),
+                                len(disaster.roster[ResourceType.TRUCK]),
+                                len(disaster.roster[ResourceType.EXCAVATOR]),
+                            )
+                            for disaster in all_active
+                        )
+                    ),
+                )
                 target_disaster = self.policy.func(resource, actionable, self.env)
                 if target_disaster is None:
                     resource.assigned_node = self.idle_resources
@@ -274,6 +299,7 @@ class SimPySimulationEngine:
                 if self.branch_decision is None:
                     self.branch_decision = target_disaster.id
                 self.decision_log.append(target_disaster.id)
+                self.decision_state_signatures.append(decision_signature)
                 self.decisions_made += 1
 
             target_disaster.transfer_resource(resource)
@@ -322,6 +348,16 @@ class SimPySimulationEngine:
             self.road_graph = self.gis_config.load_road_network()
         self.init_nodes()
         self.spawn_resources()
+
+    def allocate_node_id(self) -> int:
+        node_id = self._next_node_id
+        self._next_node_id += 1
+        return node_id
+
+    def allocate_disaster_id(self) -> int:
+        disaster_id = self._next_disaster_id
+        self._next_disaster_id += 1
+        return disaster_id
 
     def init_nodes(self):
         depots = DEPOTS if self.gis_config is None else self.gis_config.depots

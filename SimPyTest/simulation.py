@@ -234,7 +234,7 @@ class ResourceNode(ABC):
     def __init__(self, engine: SimPySimulationEngine, location: tuple[float, float], label: str = "Resource Node"):
         self.engine = engine
         self.env = engine.env
-        self.id = engine.rng.randint(1, 10000)
+        self.id = engine.allocate_node_id()
         self.location = location
         self.label = label
 
@@ -383,6 +383,7 @@ class Disaster(ResourceNode, ABC):
         else:
             loc = location
         super().__init__(engine, loc)
+        self.id = engine.allocate_disaster_id()
 
         self.active = True
         self.created_time = engine.env.now
@@ -598,8 +599,7 @@ class IdleResources(ResourceNode):
         get_events: dict[ResourceType, FilterStoreGet] = {rt: self.inventory[rt].get() for rt in ResourceType}
         finished: dict[FilterStoreGet, Resource] = yield self.env.any_of(list(get_events.values()))  # pyright: ignore[reportAssignmentType]
 
-        winner_event = self.engine.rng.choice(list(finished.keys()))
-        resource: Resource = finished[winner_event]
+        winner_event, resource = min(finished.items(), key=lambda pair: pair[1].id)
 
         for rt, event in get_events.items():
             if event == winner_event:
@@ -637,8 +637,7 @@ class IdleResources(ResourceNode):
         get_events: dict[ResourceType, FilterStoreGet] = {resource_type: self.inventory[resource_type].get() for resource_type in eligible_types}
         finished: dict[FilterStoreGet, Resource] = yield self.env.any_of(list(get_events.values()))  # pyright: ignore[reportAssignmentType]
 
-        winner_event = self.engine.rng.choice(list(finished.keys()))
-        resource = finished[winner_event]
+        winner_event, resource = min(finished.items(), key=lambda pair: pair[1].id)
 
         for resource_type, event in get_events.items():
             if event == winner_event:
@@ -754,6 +753,9 @@ class DisasterStore(simpy.FilterStore):
         if self.items:
             return
         yield self._available_event
+
+    def ids(self) -> list[int]:
+        return [item.id for item in self.items]
 
     def _sync_available_event(self) -> None:
         if self.items:

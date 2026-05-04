@@ -199,9 +199,10 @@ def resolve_critic_checkpoint(path_str: str) -> Path:
     raise FileNotFoundError(f"Cannot locate checkpoint.pt from '{path_str}'.")
 
 
-def load_critic_checkpoint(critic: Critic, checkpoint_path: str, device: torch.device) -> dict[str, Any]:
+def load_actor_critic_checkpoint(actor: DispatchActor, critic: Critic, checkpoint_path: str, device: torch.device) -> dict[str, Any]:
     resolved = resolve_critic_checkpoint(checkpoint_path)
     payload = torch.load(resolved, map_location=device)
+    actor.load_state_dict(payload["actor_state_dict"])
     critic.load_state_dict(payload["critic_state_dict"])
     return {
         "resolved_checkpoint": str(resolved),
@@ -409,7 +410,7 @@ def save_checkpoint(
     optimizer: Adam,
     config: PPOConfig,
     step: int,
-    critic_metadata: dict[str, Any],
+    checkpoint_metadata: dict[str, Any],
 ) -> None:
     payload = {
         "step": step,
@@ -417,7 +418,7 @@ def save_checkpoint(
         "actor_state_dict": agent.actor.state_dict(),
         "critic_state_dict": agent.critic.state_dict(),
         "optimizer_state_dict": optimizer.state_dict(),
-        "critic_metadata": critic_metadata,
+        "checkpoint_metadata": checkpoint_metadata,
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
     }
     torch.save(payload, output_dir / "checkpoint.pt")
@@ -450,7 +451,7 @@ def train(config: PPOConfig) -> Path:
 
     agent = PPOAgent(config).to(device)
 
-    critic_metadata = load_critic_checkpoint(agent.critic, config.critic_checkpoint, device)
+    checkpoint_metadata = load_actor_critic_checkpoint(agent.actor, agent.critic, config.critic_checkpoint, device)
     optimizer = Adam(agent.parameters(), lr=config.learning_rate)
     buffer = TransitionBuffer()
 
@@ -493,13 +494,13 @@ def train(config: PPOConfig) -> Path:
     total_wall_time_s = time.perf_counter() - train_started_perf
     train_finished_at_utc = datetime.now(timezone.utc)
     checkpoint_metrics = evaluate_agent(agent, config, device, deterministic=True)
-    save_checkpoint(run_dir, agent, optimizer, config, timestep, critic_metadata)
+    save_checkpoint(run_dir, agent, optimizer, config, timestep, checkpoint_metadata)
     write_json(
         run_dir / "training_metrics.json",
         {
             "config": asdict(config),
             "critic_checkpoint": config.critic_checkpoint,
-            "critic_metadata": critic_metadata,
+            "checkpoint_metadata": checkpoint_metadata,
             "device": device_name,
             "train_started_at_utc": train_started_at_utc.isoformat(),
             "train_finished_at_utc": train_finished_at_utc.isoformat(),

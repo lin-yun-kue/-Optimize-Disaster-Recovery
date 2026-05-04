@@ -28,7 +28,7 @@ from scripts.training.mlp.ml_dispatch import DispatchScoringConfig, DispatchScor
 
 @dataclass
 class PPOConfig:
-    scenario_name: str = "clatsop_landslide_curriculum"
+    scenario_name: str = "clatsop_landslide_ops"
     max_visible_disasters: int = 5
     sorting_strategy: str = "most_progress"
     total_timesteps: int = 20_000
@@ -42,7 +42,7 @@ class PPOConfig:
     max_grad_norm: float = 0.5
     learning_rate: float = 1e-3
     seed: int = 0
-    device: str = "cpu"
+    device: str = "auto"
     actor_hidden_dim: int = 256
     actor_depth: int = 3
     actor_dropout: float = 0.1
@@ -245,14 +245,14 @@ def evaluate_agent(agent: PPOAgent, config: PPOConfig, device: torch.device, det
                 "terminal_outcome": info["terminal_outcome"],
             }
         )
-        print(f"Checkpoint eval seed={seed} success={bool(info['is_success'])}")
+        print(f"Checkpoint eval seed={seed} success={bool(info['is_success'])} reward={total_reward} obj={float(info["objective_score"])}")
 
     successes = [episode for episode in episodes if bool(episode["success"])]
     return {
         "episodes": episodes,
         "success_rate": len(successes) / len(episodes) if episodes else 0.0,
-        "avg_objective_score": statistics.mean(float(episode["objective_score"]) for episode in episodes) if episodes else 0.0,
-        "avg_total_reward": statistics.mean(float(episode["total_reward"]) for episode in episodes) if episodes else 0.0,
+        "avg_objective_score": statistics.mean(float(episode["objective_score"]) for episode in episodes  if bool(episode["success"]) ),
+        "avg_total_reward": statistics.mean(float(episode["total_reward"]) for episode in episodes if bool(episode["success"]) ),
     }
 
 

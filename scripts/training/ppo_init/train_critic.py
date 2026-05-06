@@ -25,14 +25,49 @@ from SimPyTest.gym import (
     ObsType,
 )
 from scripts.training.mlp.ml_dispatch import DispatchScoringConfig, DispatchScoringModel
+import matplotlib.pyplot as plt
+import hashlib
+import json
 
+def actor_state_digest(actor: nn.Module) -> str:
+    """Create a stable hash for actor state_dict tensors."""
+    h = hashlib.sha256()
+    state = actor.state_dict()
+    for name in sorted(state.keys()):
+        t = state[name].detach().cpu().contiguous()
+        h.update(name.encode("utf-8"))
+        h.update(str(t.dtype).encode("utf-8"))
+        h.update(json.dumps(list(t.shape)).encode("utf-8"))
+        h.update(t.numpy().tobytes())
+    return h.hexdigest()
+
+
+def compare_actor_states(before: dict[str, torch.Tensor], after: dict[str, torch.Tensor]) -> dict[str, Any]:
+    changed: list[str] = []
+    max_abs_diff = 0.0
+
+    for k in before.keys():
+        b = before[k].detach().cpu()
+        a = after[k].detach().cpu()
+        if not torch.equal(b, a):
+            changed.append(k)
+            diff = torch.max(torch.abs(a - b)).item()
+            if diff > max_abs_diff:
+                max_abs_diff = float(diff)
+
+    return {
+        "all_equal": len(changed) == 0,
+        "changed_param_count": len(changed),
+        "changed_params_preview": changed[:10],  # avoid huge logs
+        "max_abs_diff": max_abs_diff,
+    }
 
 @dataclass
 class PPOConfig:
     scenario_name: str = "clatsop_landslide_ops"
     max_visible_disasters: int = 5
     sorting_strategy: str = "most_progress"
-    total_timesteps: int = 20_000
+    total_timesteps: int = 19_500
     rollout_steps: int = 512
     epochs: int = 10
     minibatch_size: int = 128
@@ -50,9 +85,9 @@ class PPOConfig:
     actor_dropout: float = 0.1
     critic_hidden_dim: int = 256
     critic_depth: int = 3
-    freeze_actor_updates: int = 0
+    freeze_actor_updates: int = 5
     log_interval: int = 1024
-    save_dir: str = "experiment_results/ppo_custom"
+    save_dir: str = "experiment_results/init_critic"
     actor_checkpoint: str | None = None
     checkpoint_seeds: list[int] = field(default_factory=lambda: list(range(80, 100)))
 
@@ -231,8 +266,8 @@ def evaluate_agent(agent: PPOAgent, config: PPOConfig, device: torch.device, det
     return {
         "episodes": episodes,
         "success_rate": len(successes) / len(episodes) if episodes else 0.0,
-        "avg_objective_score": statistics.mean(float(episode["objective_score"]) for episode in episodes) if episodes else 0.0,
-        "avg_total_reward": statistics.mean(float(episode["total_reward"]) for episode in episodes) if episodes else 0.0,
+        "avg_objective_score": statistics.mean(float(episode["objective_score"]) for episode in episodes  if bool(episode["success"]) ),
+        "avg_total_reward": statistics.mean(float(episode["total_reward"]) for episode in episodes if bool(episode["success"]) ),
     }
 
 
@@ -245,7 +280,7 @@ def collect_rollout(
     current_obs: ObsType,
     episode_reward: float,
 ) -> tuple[ObsType, float, dict[str, float]]:
-    episodes_finished = 0
+    episode_reward = 0
     episode_rewards: list[float] = []
 
     for _ in range(config.rollout_steps):
@@ -272,16 +307,14 @@ def collect_rollout(
 
         episode_reward += float(reward)
         current_obs = next_obs
+        episode_rewards.append(episode_reward)
 
         if done:
-            episodes_finished += 1
-            episode_rewards.append(episode_reward)
             current_obs, _ = env.reset(seed=int(np.random.randint(0, 2**31 - 1)))
-            episode_reward = 0.0
 
     stats = {
-        "episodes_finished": float(episodes_finished),
-        "mean_episode_reward": float(np.mean(episode_rewards)) if episode_rewards else 0.0,
+        "sum_episode_reward": episode_reward,
+        "rewards": episode_rewards
     }
     return current_obs, episode_reward, stats
 
@@ -412,6 +445,33 @@ def format_duration(seconds: float) -> str:
     minutes, secs = divmod(remainder, 60)
     return f"{hours:02d}:{minutes:02d}:{secs:02d}"
 
+def save_reward_plot(training_log: list[dict[str, float]], output_path: Path) -> None:
+    if not training_log:
+        return
+
+    timesteps = [record["timestep"] for record in training_log]
+    rewards = [record["mean_episode_reward"] for record in training_log]
+
+    fig, ax = plt.subplots(figsize=(10, 5))
+    ax.plot(timesteps, rewards, label="Mean episode reward", color="tab:blue", linewidth=1.5)
+
+    if len(rewards) >= 5:
+        window = min(10, len(rewards))
+        kernel = np.ones(window, dtype=np.float64) / float(window)
+        smoothed = np.convolve(np.asarray(rewards, dtype=np.float64), kernel, mode="valid")
+        smoothed_steps = timesteps[window - 1 :]
+        ax.plot(smoothed_steps, smoothed, label=f"Moving average ({window})", color="tab:orange", linewidth=2.0)
+
+    ax.set_title("Reward trend during training")
+    ax.set_xlabel("Timesteps")
+    ax.set_ylabel("Mean episode reward")
+    ax.grid(alpha=0.3)
+    ax.legend()
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=150)
+    plt.close(fig)
+
+
 
 def train(config: PPOConfig) -> Path:
     np.random.seed(config.seed)
@@ -431,6 +491,11 @@ def train(config: PPOConfig) -> Path:
     actor_metadata: dict[str, Any] = {}
     if config.actor_checkpoint:
         actor_metadata = load_actor_checkpoint(agent.actor, config.actor_checkpoint, device)
+
+    # snapshot BEFORE training
+    actor_before = {k: v.detach().cpu().clone() for k, v in agent.actor.state_dict().items()}
+    before_digest = actor_state_digest(agent.actor)
+    print(f"[DEBUG] actor digest before training: {before_digest}")
 
     optimizer = Adam(agent.parameters(), lr=config.learning_rate)
     buffer = TransitionBuffer()
@@ -455,8 +520,8 @@ def train(config: PPOConfig) -> Path:
             "policy_loss": losses["policy_loss"],
             "value_loss": losses["value_loss"],
             "entropy": losses["entropy"],
-            "episodes_finished": rollout_stats["episodes_finished"],
-            "mean_episode_reward": rollout_stats["mean_episode_reward"],
+            "sum_episode_reward": rollout_stats["sum_episode_reward"],
+            "rewards": rollout_stats["rewards"]
         }
         training_log.append(record)
 
@@ -468,14 +533,27 @@ def train(config: PPOConfig) -> Path:
                 f"pi_loss={record['policy_loss']:.4f} | "
                 f"vf_loss={record['value_loss']:.4f} | "
                 f"entropy={record['entropy']:.4f} | "
-                f"episodes={int(record['episodes_finished'])} | "
-                f"mean_ep_reward={record['mean_episode_reward']:.2f}"
+                f"sum_ep_reward={record['sum_episode_reward']:.2f}"
             )
 
     total_wall_time_s = time.perf_counter() - train_started_perf
     train_finished_at_utc = datetime.now(timezone.utc)
+
+    # snapshot AFTER training
+    after_digest = actor_state_digest(agent.actor)
+    actor_cmp = compare_actor_states(actor_before, agent.actor.state_dict())
+    print(f"[DEBUG] actor digest after training : {after_digest}")
+    print(f"[DEBUG] actor all_equal={actor_cmp['all_equal']}, "
+        f"changed_param_count={actor_cmp['changed_param_count']}, "
+        f"max_abs_diff={actor_cmp['max_abs_diff']}")
+    if not actor_cmp["all_equal"]:
+        print(f"[DEBUG] changed params (first 10): {actor_cmp['changed_params_preview']}")
+
     checkpoint_metrics = evaluate_agent(agent, config, device, deterministic=True)
     save_checkpoint(run_dir, agent, optimizer, config, timestep, actor_metadata)
+
+    save_reward_plot(training_log, run_dir / "reward_curve.png")
+
     write_json(
         run_dir / "training_metrics.json",
         {
@@ -557,4 +635,5 @@ if __name__ == "__main__":
         save_dir=args.save_dir,
         actor_checkpoint=args.actor_checkpoint,
     )
+    
     train(config)

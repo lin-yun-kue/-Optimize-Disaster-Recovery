@@ -445,26 +445,25 @@ def format_duration(seconds: float) -> str:
     minutes, secs = divmod(remainder, 60)
     return f"{hours:02d}:{minutes:02d}:{secs:02d}"
 
-def save_reward_plot(training_log: list[dict[str, float]], output_path: Path) -> None:
+def save_reward_plot(training_log: list[dict[str, Any]], output_path: Path) -> None:
     if not training_log:
         return
 
-    timesteps = [record["timestep"] for record in training_log]
-    rewards = [record["mean_episode_reward"] for record in training_log]
+    rewards: list[float] = []
+    for record in training_log:
+        rewards.extend(float(reward) for reward in record.get("rewards", []))
+
+    if not rewards:
+        return
+
+    reward_indices = list(range(1, len(rewards) + 1))
 
     fig, ax = plt.subplots(figsize=(10, 5))
-    ax.plot(timesteps, rewards, label="Mean episode reward", color="tab:blue", linewidth=1.5)
-
-    if len(rewards) >= 5:
-        window = min(10, len(rewards))
-        kernel = np.ones(window, dtype=np.float64) / float(window)
-        smoothed = np.convolve(np.asarray(rewards, dtype=np.float64), kernel, mode="valid")
-        smoothed_steps = timesteps[window - 1 :]
-        ax.plot(smoothed_steps, smoothed, label=f"Moving average ({window})", color="tab:orange", linewidth=2.0)
+    ax.plot(reward_indices, rewards, label="Collected rewards", color="tab:blue", linewidth=1.2)
 
     ax.set_title("Reward trend during training")
-    ax.set_xlabel("Timesteps")
-    ax.set_ylabel("Mean episode reward")
+    ax.set_xlabel("Collected reward index")
+    ax.set_ylabel("Reward")
     ax.grid(alpha=0.3)
     ax.legend()
     fig.tight_layout()

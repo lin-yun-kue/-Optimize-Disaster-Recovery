@@ -29,6 +29,7 @@ import matplotlib.pyplot as plt
 import hashlib
 import json
 
+
 def actor_state_digest(actor: nn.Module) -> str:
     """Create a stable hash for actor state_dict tensors."""
     h = hashlib.sha256()
@@ -311,6 +312,7 @@ def collect_rollout(
 
         if done:
             rand_seed = int(np.random.randint(0, 2**31 - 1))
+            # print(rand_seed)
             current_obs, _ = env.reset(seed=rand_seed)
 
     stats = {

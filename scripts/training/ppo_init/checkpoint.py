@@ -8,7 +8,7 @@ import torch
 from scripts.training.ppo_init.train_critic import PPOAgent, PPOConfig, evaluate_agent
 
 # 直接改這三個值即可
-RUN_DIR = Path("experiment_results\ppo_init_critic/20260506_082908/t11000_freeze4/20260506_083437")
+RUN_DIR = Path("experiment_results\\ppo_init_critic\\20260506_082908\\t11000_freeze4\\20260506_083437")
 CHECKPOINT_PATH = RUN_DIR / "checkpoint.pt"
 TRAINING_METRICS_PATH = RUN_DIR / "training_metrics.json"
 DEVICE = "cuda"  # cpu / cuda / mps
@@ -43,7 +43,7 @@ def main() -> None:
         f"success={checkpoint_metrics['success_rate'] * 100:.1f}% | "
         f"reward={checkpoint_metrics['avg_total_reward']:.2f}"
     )
-    print(json.dumps(checkpoint_metrics, indent=2, ensure_ascii=False))
+    # print(json.dumps(checkpoint_metrics, indent=2, ensure_ascii=False))
 
 
 if __name__ == "__main__":

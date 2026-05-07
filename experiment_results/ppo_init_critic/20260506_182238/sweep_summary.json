@@ -1,0 +1,91 @@
+{
+  "base_config": {
+    "actor_checkpoint": null,
+    "actor_depth": 3,
+    "actor_dropout": 0.1,
+    "actor_hidden_dim": 256,
+    "checkpoint_seeds": [
+      80,
+      81,
+      82,
+      83,
+      84,
+      85,
+      86,
+      87,
+      88,
+      89,
+      90,
+      91,
+      92,
+      93,
+      94,
+      95,
+      96,
+      97,
+      98,
+      99
+    ],
+    "clip_epsilon": 0.2,
+    "critic_depth": 3,
+    "critic_hidden_dim": 256,
+    "device": "cpu",
+    "entropy_coef": 0.005,
+    "epochs": 10,
+    "freeze_actor_updates": 4,
+    "gae_lambda": 0.95,
+    "gamma": 0.99,
+    "learning_rate": 0.001,
+    "log_interval": 1024,
+    "max_grad_norm": 0.5,
+    "max_visible_disasters": 5,
+    "minibatch_size": 128,
+    "rollout_steps": 512,
+    "save_dir": "experiment_results/init_critic",
+    "scenario_name": "clatsop_landslide_ops",
+    "seed": 0,
+    "sorting_strategy": "most_progress",
+    "total_timesteps": 11000,
+    "value_coef": 0.5
+  },
+  "best": {
+    "avg_objective_score": -219799.8033964368,
+    "avg_total_reward": -17105.59041793466,
+    "freeze_actor_updates": 4,
+    "run_dir": "experiment_results\\ppo_init_critic\\20260506_182238\\t10000_freeze4\\20260506_182238",
+    "success_rate": 1.0,
+    "timesteps": 10000
+  },
+  "freeze_updates_list": [
+    4
+  ],
+  "ranking_policy": [
+    "success_rate",
+    "avg_objective_score",
+    "avg_total_reward"
+  ],
+  "results": [
+    {
+      "avg_objective_score": -219799.8033964368,
+      "avg_total_reward": -17105.59041793466,
+      "freeze_actor_updates": 4,
+      "run_dir": "experiment_results\\ppo_init_critic\\20260506_182238\\t10000_freeze4\\20260506_182238",
+      "success_rate": 1.0,
+      "timesteps": 10000
+    },
+    {
+      "avg_objective_score": -233244.94482077935,
+      "avg_total_reward": -18338.151807637278,
+      "freeze_actor_updates": 4,
+      "run_dir": "experiment_results\\ppo_init_critic\\20260506_182238\\t11000_freeze4\\20260506_182349",
+      "success_rate": 0.9,
+      "timesteps": 11000
+    }
+  ],
+  "sweep_finished_at_utc": "2026-05-06T18:25:03.755019+00:00",
+  "sweep_started_at_utc": "2026-05-06T18:22:38.196299+00:00",
+  "timesteps_list": [
+    10000,
+    11000
+  ]
+}

@@ -67,8 +67,9 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=PPOConfig.seed)
     args = parser.parse_args()
 
-    timesteps_list = list(range(10000, 11001, 1000))
-    freeze_list = [4]
+    timesteps_list = list(range(10000, 20001, 1000))
+    # timesteps_list = [10_000, 11_000, 12_000, ]
+    freeze_list = [4,5]
 
     sweep_started_at = datetime.now(timezone.utc)
     sweep_dir = Path(args.base_save_dir) / sweep_started_at.strftime("%Y%m%d_%H%M%S")
@@ -83,6 +84,7 @@ def main() -> None:
                 total_timesteps=timesteps,
                 freeze_actor_updates=freeze_updates,
                 seed=args.seed,
+                device="cuda",
                 save_dir=str(run_save_dir),
                 actor_checkpoint=DEFAULT_ACTOR_CHECKPOINT
             )

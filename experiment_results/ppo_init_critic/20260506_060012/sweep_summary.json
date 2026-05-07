@@ -1,0 +1,475 @@
+{
+  "base_config": {
+    "actor_checkpoint": null,
+    "actor_depth": 3,
+    "actor_dropout": 0.1,
+    "actor_hidden_dim": 256,
+    "checkpoint_seeds": [
+      80,
+      81,
+      82,
+      83,
+      84,
+      85,
+      86,
+      87,
+      88,
+      89,
+      90,
+      91,
+      92,
+      93,
+      94,
+      95,
+      96,
+      97,
+      98,
+      99
+    ],
+    "clip_epsilon": 0.2,
+    "critic_depth": 3,
+    "critic_hidden_dim": 256,
+    "device": "cpu",
+    "entropy_coef": 0.005,
+    "epochs": 10,
+    "freeze_actor_updates": 5,
+    "gae_lambda": 0.95,
+    "gamma": 0.99,
+    "learning_rate": 0.001,
+    "log_interval": 1024,
+    "max_grad_norm": 0.5,
+    "max_visible_disasters": 5,
+    "minibatch_size": 128,
+    "rollout_steps": 512,
+    "save_dir": "experiment_results/init_critic",
+    "scenario_name": "clatsop_landslide_ops",
+    "seed": 0,
+    "sorting_strategy": "most_progress",
+    "total_timesteps": 19000,
+    "value_coef": 0.5
+  },
+  "best": {
+    "avg_objective_score": -207322.40107787264,
+    "avg_total_reward": -15913.852150247892,
+    "freeze_actor_updates": 4,
+    "run_dir": "experiment_results\\ppo_init_critic\\20260506_060012\\t11000_freeze4\\20260506_062607",
+    "success_rate": 1.0,
+    "timesteps": 11000
+  },
+  "freeze_updates_list": [
+    3,
+    4,
+    5
+  ],
+  "ranking_policy": [
+    "success_rate",
+    "avg_objective_score",
+    "avg_total_reward"
+  ],
+  "results": [
+    {
+      "avg_objective_score": -248931.08734713882,
+      "avg_total_reward": -19733.797718713737,
+      "freeze_actor_updates": 3,
+      "run_dir": "experiment_results\\ppo_init_critic\\20260506_060012\\t5000_freeze3\\20260506_060012",
+      "success_rate": 1.0,
+      "timesteps": 5000
+    },
+    {
+      "avg_objective_score": -258890.95555284608,
+      "avg_total_reward": -20745.52232926059,
+      "freeze_actor_updates": 4,
+      "run_dir": "experiment_results\\ppo_init_critic\\20260506_060012\\t5000_freeze4\\20260506_060103",
+      "success_rate": 1.0,
+      "timesteps": 5000
+    },
+    {
+      "avg_objective_score": -238561.40911633865,
+      "avg_total_reward": -18795.793224150555,
+      "freeze_actor_updates": 5,
+      "run_dir": "experiment_results\\ppo_init_critic\\20260506_060012\\t5000_freeze5\\20260506_060214",
+      "success_rate": 1.0,
+      "timesteps": 5000
+    },
+    {
+      "avg_objective_score": -230904.88629738416,
+      "avg_total_reward": -18258.663193384356,
+      "freeze_actor_updates": 3,
+      "run_dir": "experiment_results\\ppo_init_critic\\20260506_060012\\t6000_freeze3\\20260506_060323",
+      "success_rate": 1.0,
+      "timesteps": 6000
+    },
+    {
+      "avg_objective_score": -231987.4838412402,
+      "avg_total_reward": -18186.992468548295,
+      "freeze_actor_updates": 4,
+      "run_dir": "experiment_results\\ppo_init_critic\\20260506_060012\\t6000_freeze4\\20260506_060436",
+      "success_rate": 0.95,
+      "timesteps": 6000
+    },
+    {
+      "avg_objective_score": -230332.5782051102,
+      "avg_total_reward": -17963.821490508588,
+      "freeze_actor_updates": 5,
+      "run_dir": "experiment_results\\ppo_init_critic\\20260506_060012\\t6000_freeze5\\20260506_060547",
+      "success_rate": 1.0,
+      "timesteps": 6000
+    },
+    {
+      "avg_objective_score": -216037.52806041046,
+      "avg_total_reward": -16789.33009020898,
+      "freeze_actor_updates": 3,
+      "run_dir": "experiment_results\\ppo_init_critic\\20260506_060012\\t7000_freeze3\\20260506_060700",
+      "success_rate": 1.0,
+      "timesteps": 7000
+    },
+    {
+      "avg_objective_score": -221653.43751487616,
+      "avg_total_reward": -17330.153267393573,
+      "freeze_actor_updates": 4,
+      "run_dir": "experiment_results\\ppo_init_critic\\20260506_060012\\t7000_freeze4\\20260506_060825",
+      "success_rate": 1.0,
+      "timesteps": 7000
+    },
+    {
+      "avg_objective_score": -247995.0436913991,
+      "avg_total_reward": -19625.07830518984,
+      "freeze_actor_updates": 5,
+      "run_dir": "experiment_results\\ppo_init_critic\\20260506_060012\\t7000_freeze5\\20260506_060949",
+      "success_rate": 1.0,
+      "timesteps": 7000
+    },
+    {
+      "avg_objective_score": -240224.96197598902,
+      "avg_total_reward": -18696.442539772102,
+      "freeze_actor_updates": 3,
+      "run_dir": "experiment_results\\ppo_init_critic\\20260506_060012\\t8000_freeze3\\20260506_061108",
+      "success_rate": 1.0,
+      "timesteps": 8000
+    },
+    {
+      "avg_objective_score": -232088.04319918616,
+      "avg_total_reward": -18100.227440123235,
+      "freeze_actor_updates": 4,
+      "run_dir": "experiment_results\\ppo_init_critic\\20260506_060012\\t8000_freeze4\\20260506_061236",
+      "success_rate": 1.0,
+      "timesteps": 8000
+    },
+    {
+      "avg_objective_score": -228948.29394386188,
+      "avg_total_reward": -18041.667098247,
+      "freeze_actor_updates": 5,
+      "run_dir": "experiment_results\\ppo_init_critic\\20260506_060012\\t8000_freeze5\\20260506_061408",
+      "success_rate": 0.95,
+      "timesteps": 8000
+    },
+    {
+      "avg_objective_score": -232131.73128639002,
+      "avg_total_reward": -18132.56253452836,
+      "freeze_actor_updates": 3,
+      "run_dir": "experiment_results\\ppo_init_critic\\20260506_060012\\t9000_freeze3\\20260506_061533",
+      "success_rate": 1.0,
+      "timesteps": 9000
+    },
+    {
+      "avg_objective_score": -223364.88637454432,
+      "avg_total_reward": -17290.40233996219,
+      "freeze_actor_updates": 4,
+      "run_dir": "experiment_results\\ppo_init_critic\\20260506_060012\\t9000_freeze4\\20260506_061657",
+      "success_rate": 1.0,
+      "timesteps": 9000
+    },
+    {
+      "avg_objective_score": -210102.00136627498,
+      "avg_total_reward": -16280.452510766961,
+      "freeze_actor_updates": 5,
+      "run_dir": "experiment_results\\ppo_init_critic\\20260506_060012\\t9000_freeze5\\20260506_061829",
+      "success_rate": 0.7,
+      "timesteps": 9000
+    },
+    {
+      "avg_objective_score": -231872.17579289406,
+      "avg_total_reward": -18252.2110133091,
+      "freeze_actor_updates": 3,
+      "run_dir": "experiment_results\\ppo_init_critic\\20260506_060012\\t10000_freeze3\\20260506_062004",
+      "success_rate": 1.0,
+      "timesteps": 10000
+    },
+    {
+      "avg_objective_score": -236959.03499650105,
+      "avg_total_reward": -18529.74102635876,
+      "freeze_actor_updates": 4,
+      "run_dir": "experiment_results\\ppo_init_critic\\20260506_060012\\t10000_freeze4\\20260506_062144",
+      "success_rate": 1.0,
+      "timesteps": 10000
+    },
+    {
+      "avg_objective_score": -154677.99802523764,
+      "avg_total_reward": -11483.866035506862,
+      "freeze_actor_updates": 5,
+      "run_dir": "experiment_results\\ppo_init_critic\\20260506_060012\\t10000_freeze5\\20260506_062318",
+      "success_rate": 0.4,
+      "timesteps": 10000
+    },
+    {
+      "avg_objective_score": -219832.5499787954,
+      "avg_total_reward": -17068.25703471339,
+      "freeze_actor_updates": 3,
+      "run_dir": "experiment_results\\ppo_init_critic\\20260506_060012\\t11000_freeze3\\20260506_062428",
+      "success_rate": 1.0,
+      "timesteps": 11000
+    },
+    {
+      "avg_objective_score": -207322.40107787264,
+      "avg_total_reward": -15913.852150247892,
+      "freeze_actor_updates": 4,
+      "run_dir": "experiment_results\\ppo_init_critic\\20260506_060012\\t11000_freeze4\\20260506_062607",
+      "success_rate": 1.0,
+      "timesteps": 11000
+    },
+    {
+      "avg_objective_score": -213727.2537384264,
+      "avg_total_reward": -16731.832929122927,
+      "freeze_actor_updates": 5,
+      "run_dir": "experiment_results\\ppo_init_critic\\20260506_060012\\t11000_freeze5\\20260506_062801",
+      "success_rate": 0.6,
+      "timesteps": 11000
+    },
+    {
+      "avg_objective_score": -224307.31028494172,
+      "avg_total_reward": -17553.70447196283,
+      "freeze_actor_updates": 3,
+      "run_dir": "experiment_results\\ppo_init_critic\\20260506_060012\\t12000_freeze3\\20260506_062926",
+      "success_rate": 1.0,
+      "timesteps": 12000
+    },
+    {
+      "avg_objective_score": -253648.5927872965,
+      "avg_total_reward": -20037.714937254816,
+      "freeze_actor_updates": 4,
+      "run_dir": "experiment_results\\ppo_init_critic\\20260506_060012\\t12000_freeze4\\20260506_063108",
+      "success_rate": 1.0,
+      "timesteps": 12000
+    },
+    {
+      "avg_objective_score": -237551.2465945244,
+      "avg_total_reward": -18520.67712474409,
+      "freeze_actor_updates": 5,
+      "run_dir": "experiment_results\\ppo_init_critic\\20260506_060012\\t12000_freeze5\\20260506_063258",
+      "success_rate": 0.8,
+      "timesteps": 12000
+    },
+    {
+      "avg_objective_score": -250559.7268399146,
+      "avg_total_reward": -19763.986719761368,
+      "freeze_actor_updates": 3,
+      "run_dir": "experiment_results\\ppo_init_critic\\20260506_060012\\t13000_freeze3\\20260506_063441",
+      "success_rate": 1.0,
+      "timesteps": 13000
+    },
+    {
+      "avg_objective_score": -236989.1275766509,
+      "avg_total_reward": -18575.544195360002,
+      "freeze_actor_updates": 4,
+      "run_dir": "experiment_results\\ppo_init_critic\\20260506_060012\\t13000_freeze4\\20260506_063648",
+      "success_rate": 1.0,
+      "timesteps": 13000
+    },
+    {
+      "avg_objective_score": -220909.9566470592,
+      "avg_total_reward": -17140.800220108933,
+      "freeze_actor_updates": 5,
+      "run_dir": "experiment_results\\ppo_init_critic\\20260506_060012\\t13000_freeze5\\20260506_063854",
+      "success_rate": 0.9,
+      "timesteps": 13000
+    },
+    {
+      "avg_objective_score": -214903.19394322165,
+      "avg_total_reward": -16692.42184237352,
+      "freeze_actor_updates": 3,
+      "run_dir": "experiment_results\\ppo_init_critic\\20260506_060012\\t14000_freeze3\\20260506_064053",
+      "success_rate": 1.0,
+      "timesteps": 14000
+    },
+    {
+      "avg_objective_score": -232384.46659387363,
+      "avg_total_reward": -18134.21190980357,
+      "freeze_actor_updates": 4,
+      "run_dir": "experiment_results\\ppo_init_critic\\20260506_060012\\t14000_freeze4\\20260506_064303",
+      "success_rate": 1.0,
+      "timesteps": 14000
+    },
+    {
+      "avg_objective_score": -241395.38282197932,
+      "avg_total_reward": -19103.172227992567,
+      "freeze_actor_updates": 5,
+      "run_dir": "experiment_results\\ppo_init_critic\\20260506_060012\\t14000_freeze5\\20260506_064518",
+      "success_rate": 0.9,
+      "timesteps": 14000
+    },
+    {
+      "avg_objective_score": -227603.42022367142,
+      "avg_total_reward": -17806.261534342426,
+      "freeze_actor_updates": 3,
+      "run_dir": "experiment_results\\ppo_init_critic\\20260506_060012\\t15000_freeze3\\20260506_064711",
+      "success_rate": 1.0,
+      "timesteps": 15000
+    },
+    {
+      "avg_objective_score": -228858.03265289066,
+      "avg_total_reward": -17844.78898535888,
+      "freeze_actor_updates": 4,
+      "run_dir": "experiment_results\\ppo_init_critic\\20260506_060012\\t15000_freeze4\\20260506_064913",
+      "success_rate": 1.0,
+      "timesteps": 15000
+    },
+    {
+      "avg_objective_score": -225154.68521413166,
+      "avg_total_reward": -17325.47089563412,
+      "freeze_actor_updates": 5,
+      "run_dir": "experiment_results\\ppo_init_critic\\20260506_060012\\t15000_freeze5\\20260506_065111",
+      "success_rate": 1.0,
+      "timesteps": 15000
+    },
+    {
+      "avg_objective_score": -217481.64449687809,
+      "avg_total_reward": -16664.008608792952,
+      "freeze_actor_updates": 3,
+      "run_dir": "experiment_results\\ppo_init_critic\\20260506_060012\\t16000_freeze3\\20260506_065315",
+      "success_rate": 1.0,
+      "timesteps": 16000
+    },
+    {
+      "avg_objective_score": -229023.20402037678,
+      "avg_total_reward": -17839.95135298017,
+      "freeze_actor_updates": 4,
+      "run_dir": "experiment_results\\ppo_init_critic\\20260506_060012\\t16000_freeze4\\20260506_065508",
+      "success_rate": 0.85,
+      "timesteps": 16000
+    },
+    {
+      "avg_objective_score": -240429.54766867348,
+      "avg_total_reward": -18942.043696485853,
+      "freeze_actor_updates": 5,
+      "run_dir": "experiment_results\\ppo_init_critic\\20260506_060012\\t16000_freeze5\\20260506_065652",
+      "success_rate": 1.0,
+      "timesteps": 16000
+    },
+    {
+      "avg_objective_score": -238835.61232423887,
+      "avg_total_reward": -18723.351274363853,
+      "freeze_actor_updates": 3,
+      "run_dir": "experiment_results\\ppo_init_critic\\20260506_060012\\t17000_freeze3\\20260506_065840",
+      "success_rate": 1.0,
+      "timesteps": 17000
+    },
+    {
+      "avg_objective_score": -240543.48474421707,
+      "avg_total_reward": -18710.35243617639,
+      "freeze_actor_updates": 4,
+      "run_dir": "experiment_results\\ppo_init_critic\\20260506_060012\\t17000_freeze4\\20260506_070039",
+      "success_rate": 0.45,
+      "timesteps": 17000
+    },
+    {
+      "avg_objective_score": -233387.6518056663,
+      "avg_total_reward": -18198.477709278133,
+      "freeze_actor_updates": 5,
+      "run_dir": "experiment_results\\ppo_init_critic\\20260506_060012\\t17000_freeze5\\20260506_070219",
+      "success_rate": 1.0,
+      "timesteps": 17000
+    },
+    {
+      "avg_objective_score": -207741.0222492811,
+      "avg_total_reward": -15955.134073207815,
+      "freeze_actor_updates": 3,
+      "run_dir": "experiment_results\\ppo_init_critic\\20260506_060012\\t18000_freeze3\\20260506_070413",
+      "success_rate": 1.0,
+      "timesteps": 18000
+    },
+    {
+      "avg_objective_score": -181906.31074542992,
+      "avg_total_reward": -13868.390820262459,
+      "freeze_actor_updates": 4,
+      "run_dir": "experiment_results\\ppo_init_critic\\20260506_060012\\t18000_freeze4\\20260506_070629",
+      "success_rate": 0.2,
+      "timesteps": 18000
+    },
+    {
+      "avg_objective_score": -246131.36675380546,
+      "avg_total_reward": -19319.789649774815,
+      "freeze_actor_updates": 5,
+      "run_dir": "experiment_results\\ppo_init_critic\\20260506_060012\\t18000_freeze5\\20260506_070822",
+      "success_rate": 1.0,
+      "timesteps": 18000
+    },
+    {
+      "avg_objective_score": -217535.6150120442,
+      "avg_total_reward": -16835.67336057993,
+      "freeze_actor_updates": 3,
+      "run_dir": "experiment_results\\ppo_init_critic\\20260506_060012\\t19000_freeze3\\20260506_071043",
+      "success_rate": 1.0,
+      "timesteps": 19000
+    },
+    {
+      "avg_objective_score": -144770.00088212074,
+      "avg_total_reward": -10800.933339261153,
+      "freeze_actor_updates": 4,
+      "run_dir": "experiment_results\\ppo_init_critic\\20260506_060012\\t19000_freeze4\\20260506_071307",
+      "success_rate": 0.2,
+      "timesteps": 19000
+    },
+    {
+      "avg_objective_score": -251061.5082447895,
+      "avg_total_reward": -19877.558377723897,
+      "freeze_actor_updates": 5,
+      "run_dir": "experiment_results\\ppo_init_critic\\20260506_060012\\t19000_freeze5\\20260506_071515",
+      "success_rate": 1.0,
+      "timesteps": 19000
+    },
+    {
+      "avg_objective_score": -223770.89695064872,
+      "avg_total_reward": -17388.246386887688,
+      "freeze_actor_updates": 3,
+      "run_dir": "experiment_results\\ppo_init_critic\\20260506_060012\\t20000_freeze3\\20260506_071801",
+      "success_rate": 1.0,
+      "timesteps": 20000
+    },
+    {
+      "avg_objective_score": -145049.71098907286,
+      "avg_total_reward": -11279.356188244452,
+      "freeze_actor_updates": 4,
+      "run_dir": "experiment_results\\ppo_init_critic\\20260506_060012\\t20000_freeze4\\20260506_072035",
+      "success_rate": 0.1,
+      "timesteps": 20000
+    },
+    {
+      "avg_objective_score": -208110.45441194138,
+      "avg_total_reward": -16067.278780321343,
+      "freeze_actor_updates": 5,
+      "run_dir": "experiment_results\\ppo_init_critic\\20260506_060012\\t20000_freeze5\\20260506_072236",
+      "success_rate": 1.0,
+      "timesteps": 20000
+    }
+  ],
+  "sweep_finished_at_utc": "2026-05-06T07:25:01.538803+00:00",
+  "sweep_started_at_utc": "2026-05-06T06:00:12.084863+00:00",
+  "timesteps_list": [
+    5000,
+    6000,
+    7000,
+    8000,
+    9000,
+    10000,
+    11000,
+    12000,
+    13000,
+    14000,
+    15000,
+    16000,
+    17000,
+    18000,
+    19000,
+    20000
+  ]
+}

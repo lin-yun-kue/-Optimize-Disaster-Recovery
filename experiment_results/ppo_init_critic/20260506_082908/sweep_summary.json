@@ -1,0 +1,150 @@
+{
+  "base_config": {
+    "actor_checkpoint": null,
+    "actor_depth": 3,
+    "actor_dropout": 0.1,
+    "actor_hidden_dim": 256,
+    "checkpoint_seeds": [
+      80,
+      81,
+      82,
+      83,
+      84,
+      85,
+      86,
+      87,
+      88,
+      89,
+      90,
+      91,
+      92,
+      93,
+      94,
+      95,
+      96,
+      97,
+      98,
+      99
+    ],
+    "clip_epsilon": 0.2,
+    "critic_depth": 3,
+    "critic_hidden_dim": 256,
+    "device": "cpu",
+    "entropy_coef": 0.005,
+    "epochs": 10,
+    "freeze_actor_updates": 4,
+    "gae_lambda": 0.95,
+    "gamma": 0.99,
+    "learning_rate": 0.001,
+    "log_interval": 1024,
+    "max_grad_norm": 0.5,
+    "max_visible_disasters": 5,
+    "minibatch_size": 128,
+    "rollout_steps": 512,
+    "save_dir": "experiment_results/init_critic",
+    "scenario_name": "clatsop_landslide_ops",
+    "seed": 0,
+    "sorting_strategy": "most_progress",
+    "total_timesteps": 11000,
+    "value_coef": 0.5
+  },
+  "best": {
+    "avg_objective_score": -207322.40107787264,
+    "avg_total_reward": -15913.852150247892,
+    "freeze_actor_updates": 4,
+    "run_dir": "experiment_results\\ppo_init_critic\\20260506_082908\\t11000_freeze4\\20260506_083437",
+    "success_rate": 1.0,
+    "timesteps": 11000
+  },
+  "freeze_updates_list": [
+    3,
+    4,
+    5
+  ],
+  "ranking_policy": [
+    "success_rate",
+    "avg_objective_score",
+    "avg_total_reward"
+  ],
+  "results": [
+    {
+      "avg_objective_score": -231872.17579289406,
+      "avg_total_reward": -18252.2110133091,
+      "freeze_actor_updates": 3,
+      "run_dir": "experiment_results\\ppo_init_critic\\20260506_082908\\t10000_freeze3\\20260506_082908",
+      "success_rate": 1.0,
+      "timesteps": 10000
+    },
+    {
+      "avg_objective_score": -236959.03499650105,
+      "avg_total_reward": -18529.74102635876,
+      "freeze_actor_updates": 4,
+      "run_dir": "experiment_results\\ppo_init_critic\\20260506_082908\\t10000_freeze4\\20260506_083012",
+      "success_rate": 1.0,
+      "timesteps": 10000
+    },
+    {
+      "avg_objective_score": -154677.99802523764,
+      "avg_total_reward": -11483.866035506862,
+      "freeze_actor_updates": 5,
+      "run_dir": "experiment_results\\ppo_init_critic\\20260506_082908\\t10000_freeze5\\20260506_083136",
+      "success_rate": 0.4,
+      "timesteps": 10000
+    },
+    {
+      "avg_objective_score": -219832.5499787954,
+      "avg_total_reward": -17068.25703471339,
+      "freeze_actor_updates": 3,
+      "run_dir": "experiment_results\\ppo_init_critic\\20260506_082908\\t11000_freeze3\\20260506_083250",
+      "success_rate": 1.0,
+      "timesteps": 11000
+    },
+    {
+      "avg_objective_score": -207322.40107787264,
+      "avg_total_reward": -15913.852150247892,
+      "freeze_actor_updates": 4,
+      "run_dir": "experiment_results\\ppo_init_critic\\20260506_082908\\t11000_freeze4\\20260506_083437",
+      "success_rate": 1.0,
+      "timesteps": 11000
+    },
+    {
+      "avg_objective_score": -213727.2537384264,
+      "avg_total_reward": -16731.832929122927,
+      "freeze_actor_updates": 5,
+      "run_dir": "experiment_results\\ppo_init_critic\\20260506_082908\\t11000_freeze5\\20260506_083619",
+      "success_rate": 0.6,
+      "timesteps": 11000
+    },
+    {
+      "avg_objective_score": -224307.31028494172,
+      "avg_total_reward": -17553.70447196283,
+      "freeze_actor_updates": 3,
+      "run_dir": "experiment_results\\ppo_init_critic\\20260506_082908\\t12000_freeze3\\20260506_083751",
+      "success_rate": 1.0,
+      "timesteps": 12000
+    },
+    {
+      "avg_objective_score": -253648.5927872965,
+      "avg_total_reward": -20037.714937254816,
+      "freeze_actor_updates": 4,
+      "run_dir": "experiment_results\\ppo_init_critic\\20260506_082908\\t12000_freeze4\\20260506_083949",
+      "success_rate": 1.0,
+      "timesteps": 12000
+    },
+    {
+      "avg_objective_score": -237551.2465945244,
+      "avg_total_reward": -18520.67712474409,
+      "freeze_actor_updates": 5,
+      "run_dir": "experiment_results\\ppo_init_critic\\20260506_082908\\t12000_freeze5\\20260506_084139",
+      "success_rate": 0.8,
+      "timesteps": 12000
+    }
+  ],
+  "sweep_finished_at_utc": "2026-05-06T08:43:22.519863+00:00",
+  "sweep_started_at_utc": "2026-05-06T08:29:08.368096+00:00",
+  "timesteps_list": [
+    10000,
+    11000,
+    12000
+  ]
+}

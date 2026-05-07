@@ -295,6 +295,7 @@ def collect_rollout(
 ) -> tuple[ObsType, float, dict[str, float]]:
     episode_reward = 0
     episode_rewards: list[float] = []
+    episode_object_scores: list[float] = []
 
     for _ in range(config.rollout_steps):
         with torch.no_grad():
@@ -305,7 +306,7 @@ def collect_rollout(
             log_prob = float(dist.log_prob(torch.tensor([action], device=device)).item())
             value_scalar = float(value.item())
 
-        next_obs, reward, terminated, truncated, _info = env.step(action)
+        next_obs, reward, terminated, truncated, info = env.step(action)
         done = terminated or truncated
 
         buffer.current_resource.append(current_obs["current_resource"].copy())
@@ -321,6 +322,7 @@ def collect_rollout(
         episode_reward += float(reward)
         current_obs = next_obs
         episode_rewards.append(episode_reward)
+        episode_object_scores.append(info["objective_score"])
 
         if done:
             rand_seed = int(np.random.randint(0, 2**31 - 1))
@@ -329,7 +331,8 @@ def collect_rollout(
 
     stats = {
         "sum_episode_reward": episode_reward,
-        "rewards": episode_rewards
+        "rewards": episode_rewards,
+        "object_values": episode_object_scores
     }
     return current_obs, episode_reward, stats
 

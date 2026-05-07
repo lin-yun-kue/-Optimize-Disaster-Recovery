@@ -67,9 +67,9 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=PPOConfig.seed)
     args = parser.parse_args()
 
-    timesteps_list = list(range(10000, 20001, 1000))
+    timesteps_list = list(range(24000, 26001, 1000))
     # timesteps_list = [10_000, 11_000, 12_000, ]
-    freeze_list = [4,5]
+    freeze_list = [4, 5, 6, 7, 8, 9]
 
     sweep_started_at = datetime.now(timezone.utc)
     sweep_dir = Path(args.base_save_dir) / sweep_started_at.strftime("%Y%m%d_%H%M%S")

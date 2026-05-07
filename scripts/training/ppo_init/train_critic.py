@@ -80,7 +80,7 @@ class PPOConfig:
     max_grad_norm: float = 0.5
     learning_rate: float = 1e-3
     seed: int = 0
-    device: str = "cpu"
+    device: str = "cuda"
     actor_hidden_dim: int = 256
     actor_depth: int = 3
     actor_dropout: float = 0.1
@@ -264,11 +264,23 @@ def evaluate_agent(agent: PPOAgent, config: PPOConfig, device: torch.device, det
         # print(f"Checkpoint eval seed={seed} success={bool(info['is_success'])}")
 
     successes = [episode for episode in episodes if bool(episode["success"])]
+    scores = [
+        float(episode.get("objective_score", 0))
+        for episode in episodes
+        if episode.get("success")
+    ]
+
+    rewards = [
+        float(episode.get("total_reward", 0))
+        for episode in episodes
+        if episode.get("success")
+    ]
+
     return {
         "episodes": episodes,
         "success_rate": len(successes) / len(episodes) if episodes else 0.0,
-        "avg_objective_score": statistics.mean(float(episode["objective_score"]) for episode in episodes  if bool(episode["success"]) ),
-        "avg_total_reward": statistics.mean(float(episode["total_reward"]) for episode in episodes if bool(episode["success"]) ),
+        "avg_objective_score": statistics.mean(scores) if scores else 0,
+        "avg_total_reward": statistics.mean(rewards) if rewards else 0
     }
 
 

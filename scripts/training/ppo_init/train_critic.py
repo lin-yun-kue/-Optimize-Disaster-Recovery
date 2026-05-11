@@ -68,7 +68,7 @@ class PPOConfig:
     scenario_name: str = "clatsop_landslide_ops"
     max_visible_disasters: int = 5
     sorting_strategy: str = "most_progress"
-    total_timesteps: int = 11_000
+    total_episodes: int = 1_000
     rollout_steps: int = 512
     epochs: int = 10
     minibatch_size: int = 128
@@ -332,7 +332,7 @@ def collect_rollout(
     stats = {
         "sum_episode_reward": episode_reward,
         "rewards": episode_rewards,
-        "object_values": episode_object_scores
+        "object_values": episode_object_scores,
     }
     return current_obs, episode_reward, stats
 
@@ -513,14 +513,16 @@ def train(config: PPOConfig) -> Path:
     buffer = TransitionBuffer()
 
     timestep = 0
+    episodes_completed = 0
     update_idx = 0
     episode_reward = 0.0
     training_log: list[dict[str, float]] = []
 
-    while timestep < config.total_timesteps:
+    while episodes_completed < config.total_episodes:
         buffer.clear()
         obs, episode_reward, rollout_stats = collect_rollout(agent, env, buffer, config, device, obs, episode_reward)
         timestep += config.rollout_steps
+        episodes_completed += 1
 
         batch = build_training_batch(buffer, agent, obs, device, config)
         losses = ppo_update(agent, optimizer, batch, config, update_idx)
@@ -528,6 +530,7 @@ def train(config: PPOConfig) -> Path:
 
         record = {
             "timestep": float(timestep),
+            "episodes_completed": float(episodes_completed),
             "update": float(update_idx),
             "policy_loss": losses["policy_loss"],
             "value_loss": losses["value_loss"],
@@ -541,6 +544,7 @@ def train(config: PPOConfig) -> Path:
             print(
                 "PPO custom | "
                 f"steps={timestep} | "
+                f"episodes={episodes_completed} | "
                 f"update={update_idx} | "
                 f"pi_loss={record['policy_loss']:.4f} | "
                 f"vf_loss={record['value_loss']:.4f} | "
@@ -596,7 +600,7 @@ if __name__ == "__main__":
     parser.add_argument("--scenario-name", type=str, default=PPOConfig.scenario_name)
     parser.add_argument("--max-visible-disasters", type=int, default=PPOConfig.max_visible_disasters)
     parser.add_argument("--sorting-strategy", type=str, default=PPOConfig.sorting_strategy)
-    parser.add_argument("--timesteps", type=int, default=PPOConfig.total_timesteps)
+    parser.add_argument("--episodes", type=int, default=PPOConfig.total_episodes)
     parser.add_argument("--rollout-steps", type=int, default=PPOConfig.rollout_steps)
     parser.add_argument("--epochs", type=int, default=PPOConfig.epochs)
     parser.add_argument("--minibatch-size", type=int, default=PPOConfig.minibatch_size)
@@ -624,7 +628,7 @@ if __name__ == "__main__":
         scenario_name=args.scenario_name,
         max_visible_disasters=args.max_visible_disasters,
         sorting_strategy=args.sorting_strategy,
-        total_timesteps=args.timesteps,
+        total_episodes=args.episodes,
         rollout_steps=args.rollout_steps,
         epochs=args.epochs,
         minibatch_size=args.minibatch_size,

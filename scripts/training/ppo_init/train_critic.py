@@ -29,40 +29,7 @@ import matplotlib.pyplot as plt
 import hashlib
 import json
 
-
-# def actor_state_digest(actor: nn.Module) -> str:
-#     """Create a stable hash for actor state_dict tensors."""
-#     h = hashlib.sha256()
-#     state = actor.state_dict()
-#     for name in sorted(state.keys()):
-#         t = state[name].detach().cpu().contiguous()
-#         h.update(name.encode("utf-8"))
-#         h.update(str(t.dtype).encode("utf-8"))
-#         h.update(json.dumps(list(t.shape)).encode("utf-8"))
-#         h.update(t.numpy().tobytes())
-#     return h.hexdigest()
-
-
-# def compare_actor_states(before: dict[str, torch.Tensor], after: dict[str, torch.Tensor]) -> dict[str, Any]:
-#     changed: list[str] = []
-#     max_abs_diff = 0.0
-
-#     for k in before.keys():
-#         b = before[k].detach().cpu()
-#         a = after[k].detach().cpu()
-#         if not torch.equal(b, a):
-#             changed.append(k)
-#             diff = torch.max(torch.abs(a - b)).item()
-#             if diff > max_abs_diff:
-#                 max_abs_diff = float(diff)
-
-#     return {
-#         "all_equal": len(changed) == 0,
-#         "changed_param_count": len(changed),
-#         "changed_params_preview": changed[:10],  # avoid huge logs
-#         "max_abs_diff": max_abs_diff,
-#     }
-
+ROLLOUT_RESET_SEED_INDEX = 0
 @dataclass
 class PPOConfig:
     scenario_name: str = "clatsop_landslide_ops"
@@ -91,8 +58,9 @@ class PPOConfig:
     save_dir: str = "experiment_results/init_critic"
     actor_checkpoint: str | None = None
     test_seeds: list[int] = field(default_factory=lambda: list(range(80, 100)))
-    evaluation_interval: int = 2
+    evaluation_interval: int = 5
     evaluation_seeds: list[int] = field(default_factory=lambda: [101, 102, 103, 104])
+    rollout_reset_seeds: list[int] = field(default_factory=lambda: list(range(1000, 2000)))
 
 
 @dataclass
@@ -303,6 +271,7 @@ def collect_rollout(
     device: torch.device,
     current_obs: ObsType,
 ) -> tuple[ObsType, float, dict[str, float]]:
+    global ROLLOUT_RESET_SEED_INDEX
 
     for _ in range(config.rollout_steps):
         with torch.no_grad():
@@ -329,9 +298,9 @@ def collect_rollout(
         current_obs = next_obs
 
         if done:
-            rand_seed = int(np.random.randint(0, 2**31 - 1))
-            # print(rand_seed)
-            current_obs, _ = env.reset(seed=rand_seed)
+            reset_seed = int(config.rollout_reset_seeds[ROLLOUT_RESET_SEED_INDEX ])
+            ROLLOUT_RESET_SEED_INDEX += 1
+            current_obs, _ = env.reset(seed=int(reset_seed))
 
     return current_obs
 

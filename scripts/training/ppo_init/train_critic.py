@@ -91,6 +91,8 @@ class PPOConfig:
     save_dir: str = "experiment_results/init_critic"
     actor_checkpoint: str | None = None
     checkpoint_seeds: list[int] = field(default_factory=lambda: list(range(80, 100)))
+    evaluation_interval: int = 5
+    evaluation_seeds: list[int] = field(default_factory=lambda: [-1, -2, -3, -4])
 
 
 @dataclass
@@ -237,9 +239,16 @@ def predict_action(agent: PPOAgent, observation: ObsType, device: torch.device, 
     return action
 
 
-def evaluate_agent(agent: PPOAgent, config: PPOConfig, device: torch.device, deterministic: bool = True) -> dict[str, Any]:
+def evaluate_agent(
+    agent: PPOAgent,
+    config: PPOConfig,
+    device: torch.device,
+    deterministic: bool = True,
+    eval_seeds: list[int] | None = None,
+) -> dict[str, Any]:
     episodes: list[dict[str, float | bool | int | str | None]] = []
-    for seed in config.checkpoint_seeds:
+    seeds = eval_seeds if eval_seeds is not None else config.checkpoint_seeds
+    for seed in seeds:
         env = make_env(config, controller_name="ppo_custom_checkpoint")
         observation, _ = env.reset(seed=seed)
         terminated = False
@@ -257,7 +266,9 @@ def evaluate_agent(agent: PPOAgent, config: PPOConfig, device: torch.device, det
                 "seed": int(seed),
                 "success": bool(info["is_success"]),
                 "objective_score": float(info["objective_score"]),
+                "object_score": float(info["objective_score"]),
                 "total_reward": total_reward,
+                "reward": total_reward,
                 "terminal_outcome": info["terminal_outcome"],
             }
         )
@@ -507,6 +518,33 @@ def save_loss_plot(
 
 
 
+def save_evaluation_plot(
+    evaluation_log: list[dict[str, Any]],
+    value_key: str,
+    title: str,
+    ylabel: str,
+    output_path: Path,
+    color: str,
+) -> None:
+    if not evaluation_log:
+        return
+
+    iterations = [int(record["iteration"]) for record in evaluation_log]
+    values = [float(record[value_key]) for record in evaluation_log]
+
+    fig, ax = plt.subplots(figsize=(10, 5))
+    ax.plot(iterations, values, label=value_key, color=color, linewidth=1.4, marker="o")
+    ax.set_title(title)
+    ax.set_xlabel("Iteration")
+    ax.set_ylabel(ylabel)
+    ax.grid(alpha=0.3)
+    ax.legend()
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=150)
+    plt.close(fig)
+
+
+
 def train(config: PPOConfig) -> Path:
     np.random.seed(config.seed)
     torch.manual_seed(config.seed)
@@ -533,6 +571,7 @@ def train(config: PPOConfig) -> Path:
     episodes_completed = 0
     episode_reward = 0.0
     training_log: list[dict[str, float]] = []
+    evaluation_log: list[dict[str, Any]] = []
 
     while episodes_completed < config.total_episodes:
         buffer.clear()
@@ -552,6 +591,35 @@ def train(config: PPOConfig) -> Path:
             "rewards": rollout_stats["rewards"]
         }
         training_log.append(record)
+
+
+        if episodes_completed % config.evaluation_interval == 0:
+            periodic_eval = evaluate_agent(
+                agent,
+                config,
+                device,
+                deterministic=True,
+                eval_seeds=config.evaluation_seeds,
+            )
+            evaluation_log.append(
+                {
+                    "iteration": episodes_completed,
+                    "seeds": list(config.evaluation_seeds),
+                    "episodes": [
+                        {
+                            "seed": int(ep["seed"]),
+                            "object_score": float(ep["object_score"]),
+                            "reward": float(ep["reward"]),
+                            "success": bool(ep["success"]),
+                        }
+                        for ep in periodic_eval["episodes"]
+                    ],
+                    "avg_object_score": float(periodic_eval["avg_objective_score"]),
+                    "avg_object": float(periodic_eval["avg_objective_score"]),
+                    "avg_reward": float(periodic_eval["avg_total_reward"]),
+                    "success_rate": float(periodic_eval["success_rate"]),
+                }
+            )
 
         if episodes_completed % config.log_interval == 0:
             print(
@@ -585,6 +653,22 @@ def train(config: PPOConfig) -> Path:
         output_path=run_dir / "value_loss_curve.png",
         color="tab:green",
     )
+    save_evaluation_plot(
+        evaluation_log=evaluation_log,
+        value_key="avg_reward",
+        title="Average evaluation reward during training",
+        ylabel="Average reward",
+        output_path=run_dir / "evaluation_avg_reward_curve.png",
+        color="tab:red",
+    )
+    save_evaluation_plot(
+        evaluation_log=evaluation_log,
+        value_key="avg_object",
+        title="Average evaluation object score during training",
+        ylabel="Average object score",
+        output_path=run_dir / "evaluation_avg_object_curve.png",
+        color="tab:purple",
+    )
 
     write_json(
         run_dir / "training_metrics.json",
@@ -597,6 +681,7 @@ def train(config: PPOConfig) -> Path:
             "total_wall_time_s": total_wall_time_s,
             "total_wall_time_hms": format_duration(total_wall_time_s),
             "checkpoint_metrics": checkpoint_metrics,
+            "evaluation_log": evaluation_log,
             "training_log": training_log,
         },
     )
@@ -638,6 +723,8 @@ if __name__ == "__main__":
     parser.add_argument("--log-interval", type=int, default=PPOConfig.log_interval)
     parser.add_argument("--save-dir", type=str, default=PPOConfig.save_dir)
     parser.add_argument("--actor-checkpoint", type=str, default=None, help="Path to dispatch_model.pt from classification training.")
+    parser.add_argument("--evaluation-interval", type=int, default=PPOConfig.evaluation_interval)
+    parser.add_argument("--evaluation-seeds", type=int, nargs="+", default=PPOConfig.evaluation_seeds)
     args = parser.parse_args()
 
     config = PPOConfig(
@@ -666,6 +753,8 @@ if __name__ == "__main__":
         log_interval=args.log_interval,
         save_dir=args.save_dir,
         actor_checkpoint=args.actor_checkpoint,
+        evaluation_interval=args.evaluation_interval,
+        evaluation_seeds=args.evaluation_seeds,
     )
     
     train(config)

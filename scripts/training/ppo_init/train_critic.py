@@ -91,7 +91,7 @@ class PPOConfig:
     save_dir: str = "experiment_results/init_critic"
     actor_checkpoint: str | None = None
     test_seeds: list[int] = field(default_factory=lambda: list(range(80, 100)))
-    evaluation_interval: int = 5
+    evaluation_interval: int = 2
     evaluation_seeds: list[int] = field(default_factory=lambda: [101, 102, 103, 104])
 
 
@@ -632,7 +632,14 @@ def train(config: PPOConfig) -> Path:
         output_path=run_dir / "evaluation_avg_object_curve.png",
         color="tab:purple",
     )
-
+    save_evaluation_plot(
+        evaluation_log=evaluation_log,
+        value_key="success_rate",
+        title="Evaluation success rate during training",
+        ylabel="Success rate",
+        output_path=run_dir / "evaluation_success_rate_curve.png",
+        color="tab:blue",
+    )
     write_json(
         run_dir / "training_metrics.json",
         {

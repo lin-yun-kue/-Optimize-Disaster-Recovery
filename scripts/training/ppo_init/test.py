@@ -16,17 +16,17 @@ def load_metrics(run_dir: Path) -> dict[str, Any]:
 
 DEFAULT_ACTOR_CHECKPOINT = "experiment_results/dispatch_ml/20260407_233420/dispatch_model.pt"
 
-timesteps = 19_000
-freeze_updates = 6
+total_episodes = 200
+freeze_updates = 200
 seed = 0
 
 sweep_started_at = datetime.now(timezone.utc)
 sweep_dir = Path("experiment_results/ppo_init_critic") / sweep_started_at.strftime("%Y%m%d_%H%M%S")
 sweep_dir.mkdir(parents=True, exist_ok=True)
-run_save_dir = sweep_dir / f"t{timesteps}_freeze{freeze_updates}"
+run_save_dir = sweep_dir / f"t{total_episodes}_freeze{freeze_updates}"
 
 config = PPOConfig(
-                total_timesteps=timesteps,
+                total_episodes=total_episodes,
                 freeze_actor_updates=freeze_updates,
                 seed=seed,
                 device="cuda",
@@ -39,7 +39,7 @@ metrics = load_metrics(run_dir)
 checkpoint_metrics = metrics["checkpoint_metrics"]
 
 result = {
-    "timesteps": timesteps,
+    "timesteps": total_episodes,
     "freeze_actor_updates": freeze_updates,
     "run_dir": str(run_dir),
     "success_rate": checkpoint_metrics.get("success_rate", 0.0),

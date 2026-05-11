@@ -30,45 +30,45 @@ import hashlib
 import json
 
 
-def actor_state_digest(actor: nn.Module) -> str:
-    """Create a stable hash for actor state_dict tensors."""
-    h = hashlib.sha256()
-    state = actor.state_dict()
-    for name in sorted(state.keys()):
-        t = state[name].detach().cpu().contiguous()
-        h.update(name.encode("utf-8"))
-        h.update(str(t.dtype).encode("utf-8"))
-        h.update(json.dumps(list(t.shape)).encode("utf-8"))
-        h.update(t.numpy().tobytes())
-    return h.hexdigest()
+# def actor_state_digest(actor: nn.Module) -> str:
+#     """Create a stable hash for actor state_dict tensors."""
+#     h = hashlib.sha256()
+#     state = actor.state_dict()
+#     for name in sorted(state.keys()):
+#         t = state[name].detach().cpu().contiguous()
+#         h.update(name.encode("utf-8"))
+#         h.update(str(t.dtype).encode("utf-8"))
+#         h.update(json.dumps(list(t.shape)).encode("utf-8"))
+#         h.update(t.numpy().tobytes())
+#     return h.hexdigest()
 
 
-def compare_actor_states(before: dict[str, torch.Tensor], after: dict[str, torch.Tensor]) -> dict[str, Any]:
-    changed: list[str] = []
-    max_abs_diff = 0.0
+# def compare_actor_states(before: dict[str, torch.Tensor], after: dict[str, torch.Tensor]) -> dict[str, Any]:
+#     changed: list[str] = []
+#     max_abs_diff = 0.0
 
-    for k in before.keys():
-        b = before[k].detach().cpu()
-        a = after[k].detach().cpu()
-        if not torch.equal(b, a):
-            changed.append(k)
-            diff = torch.max(torch.abs(a - b)).item()
-            if diff > max_abs_diff:
-                max_abs_diff = float(diff)
+#     for k in before.keys():
+#         b = before[k].detach().cpu()
+#         a = after[k].detach().cpu()
+#         if not torch.equal(b, a):
+#             changed.append(k)
+#             diff = torch.max(torch.abs(a - b)).item()
+#             if diff > max_abs_diff:
+#                 max_abs_diff = float(diff)
 
-    return {
-        "all_equal": len(changed) == 0,
-        "changed_param_count": len(changed),
-        "changed_params_preview": changed[:10],  # avoid huge logs
-        "max_abs_diff": max_abs_diff,
-    }
+#     return {
+#         "all_equal": len(changed) == 0,
+#         "changed_param_count": len(changed),
+#         "changed_params_preview": changed[:10],  # avoid huge logs
+#         "max_abs_diff": max_abs_diff,
+#     }
 
 @dataclass
 class PPOConfig:
     scenario_name: str = "clatsop_landslide_ops"
     max_visible_disasters: int = 5
     sorting_strategy: str = "most_progress"
-    total_episodes: int = 1_000
+    total_episodes: int = 50
     rollout_steps: int = 512
     epochs: int = 10
     minibatch_size: int = 128
@@ -87,7 +87,7 @@ class PPOConfig:
     critic_hidden_dim: int = 256
     critic_depth: int = 3
     freeze_actor_updates: int = 4
-    log_interval: int = 1024
+    log_interval: int = 2
     save_dir: str = "experiment_results/init_critic"
     actor_checkpoint: str | None = None
     checkpoint_seeds: list[int] = field(default_factory=lambda: list(range(80, 100)))
@@ -491,7 +491,7 @@ def save_loss_plot(
     output_path: Path,
     color: str,
 ) -> None:
-    iterations = [int(record["update"]) for record in training_log]
+    iterations = [int(record["episodes"]) for record in training_log]
     losses = [float(record[loss_key]) for record in training_log]
 
     fig, ax = plt.subplots(figsize=(10, 5))
@@ -526,34 +526,25 @@ def train(config: PPOConfig) -> Path:
     if config.actor_checkpoint:
         actor_metadata = load_actor_checkpoint(agent.actor, config.actor_checkpoint, device)
 
-    # snapshot BEFORE training
-    # actor_before = {k: v.detach().cpu().clone() for k, v in agent.actor.state_dict().items()}
-    # before_digest = actor_state_digest(agent.actor)
-    # print(f"[DEBUG] actor digest before training: {before_digest}")
-
     optimizer = Adam(agent.parameters(), lr=config.learning_rate)
     buffer = TransitionBuffer()
 
-    timestep = 0
+    # timestep = 0
     episodes_completed = 0
-    update_idx = 0
     episode_reward = 0.0
     training_log: list[dict[str, float]] = []
 
     while episodes_completed < config.total_episodes:
         buffer.clear()
         obs, episode_reward, rollout_stats = collect_rollout(agent, env, buffer, config, device, obs, episode_reward)
-        timestep += config.rollout_steps
+        # timestep += config.rollout_steps
         episodes_completed += 1
 
         batch = build_training_batch(buffer, agent, obs, device, config)
-        losses = ppo_update(agent, optimizer, batch, config, update_idx)
-        update_idx += 1
+        losses = ppo_update(agent, optimizer, batch, config, episodes_completed)
 
         record = {
-            "timestep": float(timestep),
-            "episodes_completed": float(episodes_completed),
-            "update": float(update_idx),
+            "episodes": float(episodes_completed),
             "policy_loss": losses["policy_loss"],
             "value_loss": losses["value_loss"],
             "entropy": losses["entropy"],
@@ -562,12 +553,10 @@ def train(config: PPOConfig) -> Path:
         }
         training_log.append(record)
 
-        if timestep % config.log_interval == 0:
+        if episodes_completed % config.log_interval == 0:
             print(
                 "PPO custom | "
-                f"steps={timestep} | "
                 f"episodes={episodes_completed} | "
-                f"update={update_idx} | "
                 f"pi_loss={record['policy_loss']:.4f} | "
                 f"vf_loss={record['value_loss']:.4f} | "
                 f"entropy={record['entropy']:.4f} | "
@@ -577,18 +566,9 @@ def train(config: PPOConfig) -> Path:
     total_wall_time_s = time.perf_counter() - train_started_perf
     train_finished_at_utc = datetime.now(timezone.utc)
 
-    # snapshot AFTER training
-    # after_digest = actor_state_digest(agent.actor)
-    # actor_cmp = compare_actor_states(actor_before, agent.actor.state_dict())
-    # print(f"[DEBUG] actor digest after training : {after_digest}")
-    # print(f"[DEBUG] actor all_equal={actor_cmp['all_equal']}, "
-    #     f"changed_param_count={actor_cmp['changed_param_count']}, "
-    #     f"max_abs_diff={actor_cmp['max_abs_diff']}")
-    # if not actor_cmp["all_equal"]:
-    #     print(f"[DEBUG] changed params (first 10): {actor_cmp['changed_params_preview']}")
 
     checkpoint_metrics = evaluate_agent(agent, config, device, deterministic=True)
-    save_checkpoint(run_dir, agent, optimizer, config, timestep, actor_metadata)
+    save_checkpoint(run_dir, agent, optimizer, config, episodes_completed, actor_metadata)
 
     save_reward_plot(training_log, run_dir / "reward_curve.png")
     save_loss_plot(

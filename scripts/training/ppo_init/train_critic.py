@@ -484,6 +484,28 @@ def save_reward_plot(training_log: list[dict[str, Any]], output_path: Path) -> N
     plt.close(fig)
 
 
+def save_loss_plot(
+    training_log: list[dict[str, Any]],
+    loss_key: str,
+    title: str,
+    output_path: Path,
+    color: str,
+) -> None:
+    iterations = [int(record["update"]) for record in training_log]
+    losses = [float(record[loss_key]) for record in training_log]
+
+    fig, ax = plt.subplots(figsize=(10, 5))
+    ax.plot(iterations, losses, label=loss_key, color=color, linewidth=1.4)
+    ax.set_title(title)
+    ax.set_xlabel("Iteration")
+    ax.set_ylabel("Loss")
+    ax.grid(alpha=0.3)
+    ax.legend()
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=150)
+    plt.close(fig)
+
+
 
 def train(config: PPOConfig) -> Path:
     np.random.seed(config.seed)
@@ -569,6 +591,20 @@ def train(config: PPOConfig) -> Path:
     save_checkpoint(run_dir, agent, optimizer, config, timestep, actor_metadata)
 
     save_reward_plot(training_log, run_dir / "reward_curve.png")
+    save_loss_plot(
+        training_log=training_log,
+        loss_key="policy_loss",
+        title="Policy loss trend during training",
+        output_path=run_dir / "policy_loss_curve.png",
+        color="tab:orange",
+    )
+    save_loss_plot(
+        training_log=training_log,
+        loss_key="value_loss",
+        title="Value loss trend during training",
+        output_path=run_dir / "value_loss_curve.png",
+        color="tab:green",
+    )
 
     write_json(
         run_dir / "training_metrics.json",

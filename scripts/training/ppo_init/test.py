@@ -17,7 +17,7 @@ def load_metrics(run_dir: Path) -> dict[str, Any]:
 DEFAULT_ACTOR_CHECKPOINT = "experiment_results/dispatch_ml/20260407_233420/dispatch_model.pt"
 
 total_episodes = 200
-freeze_updates = 200
+freeze_updates = 25
 seed = 0
 
 sweep_started_at = datetime.now(timezone.utc)

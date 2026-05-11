@@ -90,9 +90,9 @@ class PPOConfig:
     log_interval: int = 2
     save_dir: str = "experiment_results/init_critic"
     actor_checkpoint: str | None = None
-    checkpoint_seeds: list[int] = field(default_factory=lambda: list(range(80, 100)))
+    test_seeds: list[int] = field(default_factory=lambda: list(range(80, 100)))
     evaluation_interval: int = 5
-    evaluation_seeds: list[int] = field(default_factory=lambda: [-1, -2, -3, -4])
+    evaluation_seeds: list[int] = field(default_factory=lambda: [101, 102, 103, 104])
 
 
 @dataclass
@@ -247,7 +247,7 @@ def evaluate_agent(
     eval_seeds: list[int] | None = None,
 ) -> dict[str, Any]:
     episodes: list[dict[str, float | bool | int | str | None]] = []
-    seeds = eval_seeds if eval_seeds is not None else config.checkpoint_seeds
+    seeds = eval_seeds if eval_seeds is not None else config.test_seeds
     for seed in seeds:
         env = make_env(config, controller_name="ppo_custom_checkpoint")
         observation, _ = env.reset(seed=seed)
@@ -302,11 +302,7 @@ def collect_rollout(
     config: PPOConfig,
     device: torch.device,
     current_obs: ObsType,
-    episode_reward: float,
 ) -> tuple[ObsType, float, dict[str, float]]:
-    episode_reward = 0
-    episode_rewards: list[float] = []
-    episode_object_scores: list[float] = []
 
     for _ in range(config.rollout_steps):
         with torch.no_grad():
@@ -330,22 +326,14 @@ def collect_rollout(
         buffer.values.append(value_scalar)
         buffer.log_probs.append(log_prob)
 
-        episode_reward += float(reward)
         current_obs = next_obs
-        episode_rewards.append(episode_reward)
-        episode_object_scores.append(info["objective_score"])
 
         if done:
             rand_seed = int(np.random.randint(0, 2**31 - 1))
             # print(rand_seed)
             current_obs, _ = env.reset(seed=rand_seed)
 
-    stats = {
-        "sum_episode_reward": episode_reward,
-        "rewards": episode_rewards,
-        "object_values": episode_object_scores,
-    }
-    return current_obs, episode_reward, stats
+    return current_obs
 
 
 def build_training_batch(buffer: TransitionBuffer, agent: PPOAgent, last_obs: ObsType, device: torch.device, config: PPOConfig) -> RolloutBatch:
@@ -474,26 +462,6 @@ def format_duration(seconds: float) -> str:
     minutes, secs = divmod(remainder, 60)
     return f"{hours:02d}:{minutes:02d}:{secs:02d}"
 
-def save_reward_plot(training_log: list[dict[str, Any]], output_path: Path) -> None:
-
-    rewards: list[float] = []
-    for record in training_log:
-        rewards.extend(float(reward) for reward in record.get("rewards", []))
-
-    reward_indices = list(range(1, len(rewards) + 1))
-
-    fig, ax = plt.subplots(figsize=(10, 5))
-    ax.plot(reward_indices, rewards, label="Collected rewards", color="tab:blue", linewidth=1.2)
-
-    ax.set_title("Reward trend during training")
-    ax.set_xlabel("Collected reward index")
-    ax.set_ylabel("Reward")
-    ax.grid(alpha=0.3)
-    ax.legend()
-    fig.tight_layout()
-    fig.savefig(output_path, dpi=150)
-    plt.close(fig)
-
 
 def save_loss_plot(
     training_log: list[dict[str, Any]],
@@ -569,13 +537,12 @@ def train(config: PPOConfig) -> Path:
 
     # timestep = 0
     episodes_completed = 0
-    episode_reward = 0.0
     training_log: list[dict[str, float]] = []
     evaluation_log: list[dict[str, Any]] = []
 
     while episodes_completed < config.total_episodes:
         buffer.clear()
-        obs, episode_reward, rollout_stats = collect_rollout(agent, env, buffer, config, device, obs, episode_reward)
+        obs = collect_rollout(agent, env, buffer, config, device, obs)
         # timestep += config.rollout_steps
         episodes_completed += 1
 
@@ -587,8 +554,6 @@ def train(config: PPOConfig) -> Path:
             "policy_loss": losses["policy_loss"],
             "value_loss": losses["value_loss"],
             "entropy": losses["entropy"],
-            "sum_episode_reward": rollout_stats["sum_episode_reward"],
-            "rewards": rollout_stats["rewards"]
         }
         training_log.append(record)
 
@@ -628,7 +593,6 @@ def train(config: PPOConfig) -> Path:
                 f"pi_loss={record['policy_loss']:.4f} | "
                 f"vf_loss={record['value_loss']:.4f} | "
                 f"entropy={record['entropy']:.4f} | "
-                f"sum_ep_reward={record['sum_episode_reward']:.2f}"
             )
 
     total_wall_time_s = time.perf_counter() - train_started_perf
@@ -638,7 +602,6 @@ def train(config: PPOConfig) -> Path:
     checkpoint_metrics = evaluate_agent(agent, config, device, deterministic=True)
     save_checkpoint(run_dir, agent, optimizer, config, episodes_completed, actor_metadata)
 
-    save_reward_plot(training_log, run_dir / "reward_curve.png")
     save_loss_plot(
         training_log=training_log,
         loss_key="policy_loss",

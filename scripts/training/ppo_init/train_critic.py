@@ -15,6 +15,7 @@ import torch
 from torch import nn
 from torch.distributions import Categorical
 from torch.optim import Adam
+from torch.optim.lr_scheduler import StepLR
 
 from benchmark import create_scenario_config
 from SimPyTest.gym import (
@@ -46,6 +47,8 @@ class PPOConfig:
     value_coef: float = 0.5
     max_grad_norm: float = 0.3
     learning_rate: float = 1e-4
+    scheduler_step_size: int = 10
+    scheduler_gamma: float = 0.9
     seed: int = 0
     device: str = "cuda"
     actor_hidden_dim: int = 256
@@ -512,6 +515,7 @@ def train(config: PPOConfig) -> Path:
         actor_metadata = load_actor_checkpoint(agent.actor, config.actor_checkpoint, device)
 
     optimizer = Adam(agent.parameters(), lr=config.learning_rate)
+    scheduler = StepLR(optimizer, step_size=config.scheduler_step_size, gamma=config.scheduler_gamma)
     buffer = TransitionBuffer()
 
     # timestep = 0
@@ -527,6 +531,7 @@ def train(config: PPOConfig) -> Path:
 
         batch = build_training_batch(buffer, agent, obs, device, config)
         losses = ppo_update(agent, optimizer, batch, config, episodes_completed)
+        scheduler.step()
 
         record = {
             "episodes": float(episodes_completed),

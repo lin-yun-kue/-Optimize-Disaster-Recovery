@@ -195,7 +195,7 @@ def make_env(config: PPOConfig, controller_name: str) -> DisasterResponseGym:
 
 def load_actor_checkpoint(actor: DispatchActor, checkpoint_path: str, device: torch.device) -> dict[str, Any]:
     payload = torch.load(checkpoint_path, map_location=device)
-    state_dict = payload["state_dict"]
+    state_dict = payload["actor_state_dict"]
     actor.scorer.load_state_dict(state_dict)
     return dict(payload.get("metadata", {}))
 

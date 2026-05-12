@@ -36,16 +36,16 @@ class PPOConfig:
     max_visible_disasters: int = 5
     sorting_strategy: str = "most_progress"
     total_episodes: int = 50
-    rollout_steps: int = 512
-    epochs: int = 10
-    minibatch_size: int = 128
-    gamma: float = 0.99
-    gae_lambda: float = 0.95
+    rollout_steps: int = 1024
+    epochs: int = 3
+    minibatch_size: int = 256
+    gamma: float = 0.985
+    gae_lambda: float = 0.92
     clip_epsilon: float = 0.2
     entropy_coef: float = 0.005
     value_coef: float = 0.5
-    max_grad_norm: float = 0.5
-    learning_rate: float = 1e-3
+    max_grad_norm: float = 0.3
+    learning_rate: float = 1e-4
     seed: int = 0
     device: str = "cuda"
     actor_hidden_dim: int = 256
@@ -53,14 +53,15 @@ class PPOConfig:
     actor_dropout: float = 0.1
     critic_hidden_dim: int = 256
     critic_depth: int = 3
-    freeze_actor_updates: int = 4
+    freeze_actor_updates: int = 25
     log_interval: int = 2
     save_dir: str = "experiment_results/init_critic"
     actor_checkpoint: str | None = None
-    test_seeds: list[int] = field(default_factory=lambda: list(range(80, 100)))
-    evaluation_interval: int = 5
+    test_seeds: list[int] = field(default_factory=lambda: list(range(80, 90)))
+    evaluation_interval: int = 50
     evaluation_seeds: list[int] = field(default_factory=lambda: [101, 102, 103, 104])
-    rollout_reset_seeds: list[int] = field(default_factory=lambda: list(range(1000, 2000)))
+    rollout_reset_seeds: list[int] = field(default_factory=lambda: list(range(1000, 3000)))
+    normalize_returns: bool = True
 
 
 @dataclass
@@ -214,6 +215,7 @@ def evaluate_agent(
     deterministic: bool = True,
     eval_seeds: list[int] | None = None,
 ) -> dict[str, Any]:
+    agent.eval()
     episodes: list[dict[str, float | bool | int | str | None]] = []
     seeds = eval_seeds if eval_seeds is not None else config.test_seeds
     for seed in seeds:
@@ -228,16 +230,14 @@ def evaluate_agent(
             action = predict_action(agent, observation, device, deterministic)
             observation, reward, terminated, truncated, info = env.step(action)
             total_reward += float(reward)
-
         episodes.append(
             {
                 "seed": int(seed),
                 "success": bool(info["is_success"]),
-                "objective_score": float(info["objective_score"]),
-                "object_score": float(info["objective_score"]),
+                "objective_score": float(info.get("objective_score", 0.0)),
                 "total_reward": total_reward,
-                "reward": total_reward,
-                "terminal_outcome": info["terminal_outcome"],
+                # "reward": total_reward,
+                # "terminal_outcome": info["terminal_outcome"],
             }
         )
         # print(f"Checkpoint eval seed={seed} success={bool(info['is_success'])}")
@@ -254,7 +254,7 @@ def evaluate_agent(
         for episode in episodes
         if episode.get("success")
     ]
-
+    agent.train()
     return {
         "episodes": episodes,
         "success_rate": len(successes) / len(episodes) if episodes else 0.0,
@@ -351,6 +351,9 @@ def ppo_update(
     entropy_total = 0.0
     batches = 0
 
+    return_mean = batch.returns.mean()
+    return_std = batch.returns.std().clamp_min(1e-8)
+
     for _epoch in range(config.epochs):
         np.random.shuffle(indices)
         for start in range(0, total_samples, config.minibatch_size):
@@ -376,9 +379,16 @@ def ppo_update(
             surr1 = ratio * batch.advantages[mb_idx]
             surr2 = torch.clamp(ratio, 1.0 - config.clip_epsilon, 1.0 + config.clip_epsilon) * batch.advantages[mb_idx]
             policy_loss = -torch.min(surr1, surr2).mean()
-            value_loss = torch.nn.functional.mse_loss(values, batch.returns[mb_idx])
 
-            if updates_done < config.freeze_actor_updates:
+            value_targets = batch.returns[mb_idx]
+            if config.normalize_returns:
+                value_targets = (value_targets - return_mean) / return_std
+                values_for_loss = (values - return_mean) / return_std
+            else:
+                values_for_loss = values
+            value_loss = torch.nn.functional.mse_loss(values_for_loss, value_targets)
+
+            if updates_done <= config.freeze_actor_updates:
                 loss = config.value_coef * value_loss
             else:
                 loss = policy_loss + (config.value_coef * value_loss) - (config.entropy_coef * entropy)
@@ -542,22 +552,27 @@ def train(config: PPOConfig) -> Path:
                     "episodes": [
                         {
                             "seed": int(ep["seed"]),
-                            "object_score": float(ep["object_score"]),
-                            "reward": float(ep["reward"]),
+                            "object_score": float(ep["objective_score"]),
+                            "reward": float(ep["total_reward"]),
                             "success": bool(ep["success"]),
                         }
                         for ep in periodic_eval["episodes"]
                     ],
                     "avg_object_score": float(periodic_eval["avg_objective_score"]),
-                    "avg_object": float(periodic_eval["avg_objective_score"]),
                     "avg_reward": float(periodic_eval["avg_total_reward"]),
                     "success_rate": float(periodic_eval["success_rate"]),
                 }
             )
+            print(
+                f"Evaluation {episodes_completed}| "
+                f"obj={periodic_eval['avg_objective_score']:.2f} | "
+                f"success={periodic_eval['success_rate'] * 100:.1f}% | "
+                f"reward={periodic_eval['avg_total_reward']:.2f}"          
+            )
 
         if episodes_completed % config.log_interval == 0:
             print(
-                "PPO custom | "
+                f"PPO custom| "
                 f"episodes={episodes_completed} | "
                 f"pi_loss={record['policy_loss']:.4f} | "
                 f"vf_loss={record['value_loss']:.4f} | "
@@ -595,7 +610,7 @@ def train(config: PPOConfig) -> Path:
     )
     save_evaluation_plot(
         evaluation_log=evaluation_log,
-        value_key="avg_object",
+        value_key="avg_object_score",
         title="Average evaluation object score during training",
         ylabel="Average object score",
         output_path=run_dir / "evaluation_avg_object_curve.png",

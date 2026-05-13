@@ -15,15 +15,16 @@ def load_metrics(run_dir: Path) -> dict[str, Any]:
     return json.loads(metrics_path.read_text(encoding="utf-8"))
 
 DEFAULT_ACTOR_CHECKPOINT = "experiment_results/dispatch_ml/20260407_233420/dispatch_model.pt"
+DEFAULT_PPO_INIT_CHECKPOINT = "experiment_results/ppo_init_critic/20260513_063620/checkpoint.pt"
 
-total_episodes = 200
-freeze_updates = 25
+total_episodes = 800
+freeze_updates = 0
 seed = 0
 
 sweep_started_at = datetime.now(timezone.utc)
-sweep_dir = Path("experiment_results/ppo_init_critic") / sweep_started_at.strftime("%Y%m%d_%H%M%S")
+sweep_dir = Path("experiment_results/ppo_init_critic")
 sweep_dir.mkdir(parents=True, exist_ok=True)
-run_save_dir = sweep_dir / f"t{total_episodes}_freeze{freeze_updates}"
+run_save_dir = sweep_dir
 
 config = PPOConfig(
                 total_episodes=total_episodes,
@@ -31,7 +32,8 @@ config = PPOConfig(
                 seed=seed,
                 device="cuda",
                 save_dir=str(run_save_dir),
-                actor_checkpoint=DEFAULT_ACTOR_CHECKPOINT
+                # actor_checkpoint=DEFAULT_ACTOR_CHECKPOINT
+                ppo_init_checkpoint=DEFAULT_PPO_INIT_CHECKPOINT
             )
 
 run_dir = train(config)

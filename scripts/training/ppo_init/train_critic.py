@@ -60,10 +60,11 @@ class PPOConfig:
     log_interval: int = 2
     save_dir: str = "experiment_results/init_critic"
     actor_checkpoint: str | None = None
+    ppo_init_checkpoint: str | None = None
     test_seeds: list[int] = field(default_factory=lambda: list(range(80, 90)))
-    evaluation_interval: int = 50
+    evaluation_interval: int = 5
     evaluation_seeds: list[int] = field(default_factory=lambda: [101, 102, 103, 104])
-    rollout_reset_seeds: list[int] = field(default_factory=lambda: list(range(1000, 3000)))
+    rollout_reset_seeds: list[int] = field(default_factory=lambda: list(range(1000, 9000)))
     normalize_returns: bool = True
 
 
@@ -199,6 +200,15 @@ def load_actor_checkpoint(actor: DispatchActor, checkpoint_path: str, device: to
     actor.scorer.load_state_dict(state_dict)
     return dict(payload.get("metadata", {}))
 
+def load_train_critic_checkpoint(agent: PPOAgent, checkpoint_path: str, device: torch.device) -> dict[str, object]:
+    payload = torch.load(checkpoint_path, map_location=device)
+    agent.actor.load_state_dict(payload["actor_state_dict"])
+    agent.critic.load_state_dict(payload["critic_state_dict"])
+    return {
+        "episodes_completed": payload.get("episodes_completed"),
+        # "actor_metadata": payload.get("actor_metadata", {}),
+        "config": payload.get("config", {}),
+    }
 
 def predict_action(agent: PPOAgent, observation: ObsType, device: torch.device, deterministic: bool) -> int:
     with torch.no_grad():
@@ -513,6 +523,10 @@ def train(config: PPOConfig) -> Path:
     actor_metadata: dict[str, Any] = {}
     if config.actor_checkpoint:
         actor_metadata = load_actor_checkpoint(agent.actor, config.actor_checkpoint, device)
+
+    if config.ppo_init_checkpoint:
+        checkpoint_info = load_train_critic_checkpoint(agent, config.ppo_init_checkpoint, device)
+        # print(f"Initialized PPO agent from checkpoint with metadata: {checkpoint_info.get('config', {})}")
 
     optimizer = Adam(agent.parameters(), lr=config.learning_rate)
     scheduler = StepLR(optimizer, step_size=config.scheduler_step_size, gamma=config.scheduler_gamma)

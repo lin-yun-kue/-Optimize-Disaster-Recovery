@@ -6,6 +6,8 @@ from pathlib import Path
 import time
 from typing import cast
 
+import torch
+
 from .generate_dispatch_training_data import collect_demonstration_dataset
 from .ml_dispatch import DemonstrationBatch, append_demonstration_batches, train_behavior_cloning, write_json
 
@@ -32,6 +34,18 @@ def parse_csv(value: str | None) -> list[str]:
     if value is None:
         return []
     return [item.strip() for item in value.split(",") if item.strip()]
+
+
+def select_device() -> str:
+    if torch.cuda.is_available():
+        return "cuda"
+    if torch.backends.mps.is_available():
+        try:
+            torch.zeros(1).to("mps")
+        except RuntimeError:
+            return "cpu"
+        return "mps"
+    return "cpu"
 
 
 def parse_args() -> MyNamespace:
@@ -92,6 +106,8 @@ if __name__ == "__main__":
 
     dataset = load_or_collect_dataset(args)
     dataset.validate_for_training()
+    device = select_device()
+    print(f"device: {device}")
     policy, history = train_behavior_cloning(
         dataset=dataset,
         max_visible_disasters=args.max_visible_disasters,
@@ -103,7 +119,7 @@ if __name__ == "__main__":
         hidden_dim=args.hidden_dim,
         depth=args.depth,
         dropout=args.dropout,
-        device="mps",
+        device=device,
     )
     policy.metadata.update(
         {
@@ -111,6 +127,7 @@ if __name__ == "__main__":
             "dataset_paths": parse_csv(args.dataset),
             "train_seeds": args.train_seeds,
             "eval_seeds": args.eval_seeds,
+            "device": device,
             "dataset_metadata": dataset.metadata,
         }
     )

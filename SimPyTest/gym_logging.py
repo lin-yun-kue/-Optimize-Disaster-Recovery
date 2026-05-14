@@ -6,7 +6,6 @@ from pathlib import Path
 from typing import Any, TypedDict
 
 from SimPyTest.engine import SimPySimulationEngine
-from SimPyTest.evaluation import build_simulation_summary
 from SimPyTest.simulation import Resource, ResourceType
 
 
@@ -28,13 +27,15 @@ class EpisodeLogRecord(TypedDict):
     seed: int
     scenario_name: str
     controller_name: str
-    terminal_label: str
+    terminal_outcome: str
     success: bool
     total_sim_time: float
-    non_idle_time: float
+    time_with_disasters: float
+    resolution_rate: float
     total_spent: float
-    population_affected: int
-    weighted_closure_metric: float
+    total_weighted_closure_hours: float
+    total_drive_time: float
+    total_resource_hours: float
     avg_response_time: float
     avg_resolution_time: float
     decision_count: int
@@ -97,8 +98,6 @@ def build_global_state_summary(engine: SimPySimulationEngine | None) -> dict[str
         "active_disasters": len(engine.disaster_store.items),
         "idle_trucks": len(idle_resources.inventory[ResourceType.TRUCK].items),
         "idle_excavators": len(idle_resources.inventory[ResourceType.EXCAVATOR].items),
-        "idle_snowplows": len(idle_resources.inventory[ResourceType.SNOWPLOW].items),
-        "idle_assessment_vehicles": len(idle_resources.inventory[ResourceType.ASSESSMENT_VEHICLE].items),
     }
 
 
@@ -140,22 +139,22 @@ def finalize_episode_log(
     if logger is None or engine is None:
         return
 
-    metrics = engine.metrics.get_per_disaster_stats()
-    population_affected = sum(int(record["population_affected"] or 0) for record in metrics)
-    summary = build_simulation_summary(engine)
+    summary = engine.summary()
     terminal_outcome = engine.last_terminal_outcome or SimPySimulationEngine.TERMINAL_FAIL_INVALID_STATE
     logger.finalize(
         {
             "seed": episode_seed,
             "scenario_name": scenario_name,
             "controller_name": controller_name,
-            "terminal_label": terminal_outcome,
+            "terminal_outcome": terminal_outcome,
             "success": terminal_outcome == SimPySimulationEngine.TERMINAL_SUCCESS,
             "total_sim_time": float(engine.env.now),
-            "non_idle_time": float(summary.non_idle_time),
+            "time_with_disasters": float(summary.time_with_disasters),
+            "resolution_rate": float(summary.resolution_rate),
             "total_spent": float(summary.total_spent),
-            "population_affected": population_affected,
-            "weighted_closure_metric": float(summary.total_weighted_closure_hours),
+            "total_weighted_closure_hours": float(summary.total_weighted_closure_hours),
+            "total_drive_time": float(summary.total_drive_time),
+            "total_resource_hours": float(summary.total_resource_hours),
             "avg_response_time": float(summary.avg_response_time),
             "avg_resolution_time": float(summary.avg_resolution_time),
             "decision_count": len(logger.decisions),

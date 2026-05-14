@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from argparse import Namespace
 import argparse
+from dataclasses import dataclass
 from pathlib import Path
 import time
 
@@ -12,6 +13,7 @@ from SimPyTest.policies import BENCHMARK_POLICIES
 from .ml_dispatch import DemonstrationBatch, append_demonstration_batches, collect_policy_demonstrations, write_json
 
 
+@dataclass
 class MyNamespace(Namespace):
     difficulties: str | None
     teachers: str
@@ -41,8 +43,7 @@ def collect_demonstration_dataset(
     if not teacher_names:
         raise ValueError("At least one teacher policy is required")
 
-    teacher_lookup = {policy.name: policy for policy in BENCHMARK_POLICIES}
-    teacher_policies = [teacher_lookup[name] for name in teacher_names]
+    teacher_policies = [policy for policy in BENCHMARK_POLICIES if policy.name in teacher_names]
     seed_values = list(range(train_seeds))
 
     batches: list[DemonstrationBatch] = []
@@ -78,7 +79,7 @@ def parse_args() -> MyNamespace:
     parser.add_argument("--max-visible-disasters", type=int, default=5)
     parser.add_argument("--output-dir", type=str, default="experiment_results/dispatch_datasets")
     parser.add_argument("--name", type=str, default=None)
-    return parser.parse_args(namespace=MyNamespace())
+    return parser.parse_args()  # pyright: ignore[reportReturnType]
 
 
 if __name__ == "__main__":

@@ -16,6 +16,7 @@ from torch.utils.data import DataLoader, TensorDataset
 from SimPyTest.engine import SimPySimulationEngine
 from SimPyTest.gym import DisasterResponseGym, ObsType
 from SimPyTest.policies import Policy
+from SimPyTest.policies_tournament import clear_tournament_cache, reset_tournament_profile_stats, set_tournament_depth, set_tournament_max_decisions
 from benchmark import create_scenario_config
 
 
@@ -307,19 +308,6 @@ def _apply_pending_decision(engine: SimPySimulationEngine, target_disaster: Any)
     engine.decision_log.append(target_disaster.id)
     engine.decisions_made += 1
 
-    dispatch_delay = engine._consume_dispatch_delay_minutes(target_disaster)
-    if dispatch_delay > 0:
-        engine.metrics.record_dispatch_delay(target_disaster.id, dispatch_delay)
-        engine.total_dispatch_delay += dispatch_delay
-        engine.dispatch_delay_events += 1
-        engine.max_dispatch_delay = max(engine.max_dispatch_delay, dispatch_delay)
-        engine.env.run(until=engine.env.timeout(dispatch_delay))
-        if not target_disaster.active or target_disaster not in engine.disaster_store.items:
-            resource.assigned_node = engine.idle_resources
-            engine.idle_resources.mark_resource_available(resource)
-            engine.pending_decision_resource = None
-            return
-
     target_disaster.transfer_resource(resource)
     engine.pending_decision_resource = None
     engine._main_loop_process = engine.env.process(engine.loop())
@@ -343,6 +331,9 @@ def collect_policy_demonstrations(
     max_steps_per_seed: int = 25_000,
     successful_episodes_only: bool = False,
 ) -> DemonstrationBatch:
+    set_tournament_depth(1)
+    set_tournament_max_decisions(None)
+
     observations: list[npt.NDArray[np.float32]] = []
     current_resource_rows: list[npt.NDArray[np.float32]] = []
     global_state_rows: list[npt.NDArray[np.float32]] = []
@@ -358,6 +349,8 @@ def collect_policy_demonstrations(
 
     for teacher_policy in teacher_policies:
         for seed in seed_values:
+            clear_tournament_cache()
+            reset_tournament_profile_stats()
             cfg = create_scenario_config(difficulty, gis_config=None)
             env = DisasterResponseGym(
                 max_visible_disasters=max_visible_disasters,
@@ -366,16 +359,24 @@ def collect_policy_demonstrations(
                 controller_name=f"teacher_{teacher_policy.name}",
                 scenario_name=difficulty,
             )
-            teacher_driver = Policy("collector_noop", lambda resource, disasters, env: None)
-            engine = SimPySimulationEngine(policy=teacher_driver, seed=seed, scenario_config=cfg)
-            engine.initialize_world()
-            engine.stop_before_policy_decision = True
-            engine.run_in_gym(engine.loop)
-            env.engine = engine
-            env.current_resource = None
-            env.current_candidates = []
-            env.current_action = None
-            env.decision_needed = False
+
+            obs, info = env.reset(seed=seed)
+            if info["is_success"] or info["is_failure"] or info["is_truncated"]:
+                terminal_outcome = info["terminal_outcome"]
+                success = info["is_success"]
+                episode_rows.append(
+                    {
+                        "teacher_policy": teacher_policy.name,
+                        "seed": seed,
+                        "steps": 0,
+                        "terminal_outcome": terminal_outcome,
+                        "success": success,
+                        "included_in_dataset": success or not successful_episodes_only,
+                    }
+                )
+                progress.update(status=f"teacher={teacher_policy.name} seed={seed} success={'yes' if success else 'no'}")
+                continue
+
             steps = 0
             episode_observations: list[npt.NDArray[np.float32]] = []
             episode_current: list[npt.NDArray[np.float32]] = []
@@ -383,38 +384,10 @@ def collect_policy_demonstrations(
             episode_candidates: list[npt.NDArray[np.float32]] = []
             episode_actions: list[int] = []
             episode_masks: list[npt.NDArray[np.float32]] = []
-            while True:
-                if not _advance_engine_to_policy_decision(engine):
-                    terminal_outcome = engine.last_terminal_outcome or SimPySimulationEngine.TERMINAL_FAIL_INVALID_STATE
-                    success = bool(terminal_outcome == SimPySimulationEngine.TERMINAL_SUCCESS)
-                    if success or not successful_episodes_only:
-                        observations.extend(episode_observations)
-                        current_resource_rows.extend(episode_current)
-                        global_state_rows.extend(episode_global)
-                        candidate_rows.extend(episode_candidates)
-                        actions.extend(episode_actions)
-                        masks.extend(episode_masks)
-                        teacher_counts[teacher_policy.name] += len(episode_actions)
-                    episode_rows.append(
-                        {
-                            "teacher_policy": teacher_policy.name,
-                            "seed": seed,
-                            "steps": steps,
-                            "terminal_outcome": terminal_outcome,
-                            "success": success,
-                            "included_in_dataset": success or not successful_episodes_only,
-                        }
-                    )
-                    progress.update(status=f"teacher={teacher_policy.name} seed={seed} success={'yes' if success else 'no'}")
+
+            while not (info["is_success"] or info["is_failure"] or info["is_truncated"]):
+                if steps >= max_steps_per_seed:
                     break
-                resource = engine.pending_decision_resource
-                if resource is None:
-                    raise RuntimeError("Engine reached a policy decision without a pending resource")
-                actionable = [disaster for disaster in engine.disaster_store.items if resource.resource_type in disaster.needed_resources()]
-                env.current_resource = resource
-                env.current_candidates = env._sort_candidates(resource, actionable)[: env.max_slots]
-                env.decision_needed = True
-                obs = env._get_obs()
 
                 action = teacher_action_from_env(env, teacher_policy)
                 episode_observations.append(flatten_observation(obs))
@@ -423,34 +396,36 @@ def collect_policy_demonstrations(
                 episode_candidates.append(obs["candidate_disasters"].copy())
                 episode_actions.append(int(action))
                 episode_masks.append(obs["valid_actions"].astype(np.float32))
-                _apply_pending_decision(engine, env.current_candidates[action])
-                env.current_resource = None
-                env.current_candidates = []
-                env.decision_needed = False
+
+                obs, reward, terminated, truncated, info = env.step(action)
                 steps += 1
-                if steps >= max_steps_per_seed:
-                    terminal_outcome = engine.last_terminal_outcome or SimPySimulationEngine.TERMINAL_FAIL_TIMEOUT
-                    success = bool(terminal_outcome == SimPySimulationEngine.TERMINAL_SUCCESS)
-                    if success or not successful_episodes_only:
-                        observations.extend(episode_observations)
-                        current_resource_rows.extend(episode_current)
-                        global_state_rows.extend(episode_global)
-                        candidate_rows.extend(episode_candidates)
-                        actions.extend(episode_actions)
-                        masks.extend(episode_masks)
-                        teacher_counts[teacher_policy.name] += len(episode_actions)
-                    episode_rows.append(
-                        {
-                            "teacher_policy": teacher_policy.name,
-                            "seed": seed,
-                            "steps": steps,
-                            "terminal_outcome": terminal_outcome,
-                            "success": success,
-                            "included_in_dataset": success,
-                        }
-                    )
-                    progress.update(status=f"teacher={teacher_policy.name} seed={seed} success={'yes' if success else 'no'}")
-                    break
+
+                if teacher_policy.name == "tournament":
+                    clear_tournament_cache()
+                    reset_tournament_profile_stats()
+
+            terminal_outcome = info["terminal_outcome"]
+            success = info["is_success"]
+            if success or not successful_episodes_only:
+                observations.extend(episode_observations)
+                current_resource_rows.extend(episode_current)
+                global_state_rows.extend(episode_global)
+                candidate_rows.extend(episode_candidates)
+                actions.extend(episode_actions)
+                masks.extend(episode_masks)
+                teacher_counts[teacher_policy.name] += len(episode_actions)
+
+            episode_rows.append(
+                {
+                    "teacher_policy": teacher_policy.name,
+                    "seed": seed,
+                    "steps": steps,
+                    "terminal_outcome": terminal_outcome,
+                    "success": success,
+                    "included_in_dataset": success or not successful_episodes_only,
+                }
+            )
+            progress.update(status=f"teacher={teacher_policy.name} seed={seed} success={'yes' if success else 'no'}")
     progress.close(status=f"examples={len(actions)}")
 
     return DemonstrationBatch(

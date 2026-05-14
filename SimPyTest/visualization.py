@@ -1,19 +1,24 @@
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from math import cos, sin
 from time import perf_counter
-from typing import TYPE_CHECKING, Callable, cast
+from typing import TYPE_CHECKING, Any
 
+import geopandas as gpd
 import matplotlib.pyplot as plt
+import numpy as np
 from matplotlib.axes import Axes
-from matplotlib.collections import LineCollection
+from matplotlib.collections import LineCollection, PathCollection
 from matplotlib.figure import Figure
+from matplotlib.text import Text
+from SimPyTest.gis_utils import CLATSOP_ROAD_BOUNDS_UTM
+from SimPyTest.simulation import WildfireDebris
 
 if TYPE_CHECKING:
-    from SimPyTest.simulation import Landslide
     from SimPyTest.engine import SimPySimulationEngine
+    from SimPyTest.simulation import Landslide
 else:
     from SimPyTest.simulation import Landslide
 
@@ -33,19 +38,19 @@ class DisasterSnapshot:
     color: str
     marker: str
     label: str
+    hatch: str
     percent_remaining: float
-    dirt_level: float
+    size: float
 
 
 @dataclass(frozen=True)
 class ResourceSnapshot:
     id: int
-    location: tuple[float, float]
-    prev_location: tuple[float, float]
-    move_time: float
-    move_start_time: float
+    # interpolated display position (already computed by snapshot())
+    display_location: tuple[float, float]
     marker: str
     color: str
+    label: str
 
 
 @dataclass(frozen=True)
@@ -58,133 +63,206 @@ class EngineSnapshot:
     resources: list[ResourceSnapshot]
 
 
+def _interp_resource_location(resource, env_now: float) -> tuple[float, float]:
+    """Return the interpolated display position for a moving resource."""
+    frac = resource.id * (1 + math.sqrt(5)) / 2
+    offset_x = cos(frac) * 10
+    offset_y = sin(frac) * 10
+
+    loc1 = (resource.location[0] + offset_x, resource.location[1] + offset_y)
+    loc2 = (resource.prev_location[0] + offset_x, resource.prev_location[1] + offset_y)
+
+    t = 1.0 if resource.move_time == 0 else (env_now - resource.move_start_time) / resource.move_time
+    t = max(0.0, min(1.0, t))
+    return (
+        loc1[0] * t + loc2[0] * (1 - t),
+        loc1[1] * t + loc2[1] * (1 - t),
+    )
+
+
+def _update_text_pool(
+    ax: Axes,
+    pool: list[Text],
+    positions: list[tuple[float, float]],
+    texts: list[str],
+    *,
+    offset: tuple[float, float] = (0.0, 0.0),
+    fontsize: int = 8,
+    ha: str = "left",
+    va: str = "bottom",
+    zorder: int = 5,
+    colors: list[str] | None = None,
+) -> None:
+    """
+    Reuse Text artists from *pool*, growing or hiding as needed.
+    Mutates *pool* in-place.
+    """
+    n = len(positions)
+    for i in range(max(n, len(pool))):
+        if i < n:
+            x = positions[i][0] + offset[0]
+            y = positions[i][1] + offset[1]
+            if i < len(pool):
+                t = pool[i]
+                t.set_position((x, y))
+                t.set_text(texts[i])
+                t.set_visible(True)
+                if colors:
+                    t.set_color(colors[i])
+            else:
+                kw: dict[str, Any] = dict(fontsize=fontsize, ha=ha, va=va, zorder=zorder)
+                if colors:
+                    kw["color"] = colors[i]
+                pool.append(ax.text(x, y, texts[i], **kw))
+        elif i < len(pool):
+            pool[i].set_visible(False)
+
+
+@dataclass
+class _MarkerGroup:
+    """Owns a single scatter PathCollection for one marker symbol."""
+
+    scatter: PathCollection
+    # parallel arrays — rebuilt each frame from the current data
+    positions: list[tuple[float, float]] = field(default_factory=list)
+    colors: list[str] = field(default_factory=list)
+    sizes: list[float] = field(default_factory=list)
+
+    def push(self, pos: tuple[float, float], color: str, size: float) -> None:
+        self.positions.append(pos)
+        self.colors.append(color)
+        self.sizes.append(size)
+
+    def flush(self) -> None:
+        """Apply accumulated data to the scatter artist, then clear buffers."""
+        if self.positions:
+            self.scatter.set_offsets(np.array(self.positions))
+            self.scatter.set_facecolor(self.colors)
+            self.scatter.set_sizes(self.sizes)
+        else:
+            self.scatter.set_offsets(np.zeros((0, 2)))
+            self.scatter.set_facecolor([])
+            self.scatter.set_sizes([])
+        self.positions.clear()
+        self.colors.clear()
+        self.sizes.clear()
+
+
+def _get_or_create_marker_group(
+    groups: dict[str, _MarkerGroup],
+    ax: Axes,
+    marker: str,
+    zorder: int,
+    base_size: float,
+) -> _MarkerGroup:
+    if marker not in groups:
+        sc = ax.scatter([], [], marker=marker, facecolors=[], s=base_size, zorder=zorder, edgecolors="black", linewidths=0.5)
+        groups[marker] = _MarkerGroup(scatter=sc)
+    return groups[marker]
+
+
 class EngineVisualizer:
-    def __init__(self, engine: SimPySimulationEngine):
-        self.engine: SimPySimulationEngine = engine
+    SHAPEFILE_PATH: str = "/Users/aidan/Documents/School/AI/Capstone/maps/" "tl_2024_41007_roads/tl_2024_41007_roads.shp"
+
+    def __init__(self, engine: SimPySimulationEngine) -> None:
+        self.engine = engine
+
+        # figure / axes
         self.fig: Figure | None = None
-        self.axs: list[Axes] | None = None
-        self._gis_edge_segments: list[tuple[tuple[float, float], tuple[float, float]]] | None = None
-        self._gis_bounds: tuple[float, float, float, float] | None = None
+        self.axs: tuple[Axes, Axes, Axes] | None = None  # (map, dirt, info)
+
+        # --- static road geometry (loaded once) ---
+        self._road_collection: LineCollection | None = None
+
+        # --- node artists ---
+        self._node_scatter: PathCollection | None = None
+        self._node_label_pool: list[Text] = []
+
+        # --- disaster artists  (one scatter per marker type) ---
+        self._disaster_groups: dict[str, _MarkerGroup] = {}
+        self._disaster_label_pool: list[Text] = []
+
+        # --- resource artists  (one scatter per marker type) ---
+        self._resource_groups: dict[str, _MarkerGroup] = {}
+        self._resource_label_pool: list[Text] = []
+
+        # --- dirt / history chart ---
         self._time_points: list[float] = []
-        self._disaster_histories: dict[int, list[float]] = {}
-        self._known_disaster_labels: dict[int, str] = {}
-        self._last_render_wall_time: float | None = None
-        self._fps_estimate: float = 0.0
+        self._disaster_size: dict[int, list[float]] = {}  # id -> per-tick dirt
+        self._disaster_hatch: dict[int, str] = {}  # id -> hatch
+        self._disaster_type_label: dict[int, str] = {}  # id -> short label
+        self._dirt_drawn_ids: tuple[int, ...] = ()
+        self._dirt_drawn_len: int = 0
+
+        # --- info panel ---
+        self._info_cache: str = ""
         self._initial_resource_counts: dict[str, int] | None = None
 
-    def _capture_initial_resource_counts(self) -> dict[str, int]:
-        counts: dict[str, set[int]] = {}
-        nodes = self.engine.resource_nodes + [self.engine.idle_resources] + self.engine.disaster_store.items
-        for node in nodes:
-            for resource_type, store in node.inventory.items():
-                ids = counts.setdefault(resource_type.name, set())
-                for resource in store.items:
-                    ids.add(resource.id)
-            for resource_type, resources in node.roster.items():
-                ids = counts.setdefault(resource_type.name, set())
-                for resource in resources:
-                    ids.add(resource.id)
-        return {name: len(ids) for name, ids in sorted(counts.items())}
+        # --- fps ---
+        self._last_wall_time: float | None = None
+        self._fps: float = 0.0
+        self._frame: int = 0
 
-    def _starting_config_lines(self) -> list[str]:
-        if self._initial_resource_counts is None:
-            self._initial_resource_counts = self._capture_initial_resource_counts()
+    def _load_roads(self, ax: Axes) -> None:
+        """Load shapefile into a LineCollection and add it to ax (once)."""
+        try:
+            gdf = gpd.read_file(self.SHAPEFILE_PATH)
+            if gdf.crs and str(gdf.crs) != "EPSG:32610":
+                gdf = gdf.to_crs("EPSG:32610")
+            segs = []
+            for geom in gdf.geometry:
+                if geom is None:
+                    continue
+                lines = [geom] if geom.geom_type == "LineString" else list(geom.geoms)
+                for line in lines:
+                    coords = list(line.coords)
+                    segs.extend(zip(coords[:-1], coords[1:]))
+            if segs:
+                self._road_collection = LineCollection(segs, colors="#b0b0b0", linewidths=0.3, alpha=0.5, zorder=1)
+                ax.add_collection(self._road_collection)
+        except Exception as exc:
+            print(f"Warning: could not load shapefile: {exc}")
 
-        lines = ["Starting Config:"]
-        resource_summary = ", ".join(f"{name}:{count}" for name, count in self._initial_resource_counts.items())
-        lines.append(f"  resources: {resource_summary or 'none'}")
-        lines.append(
-            "  disasters: " f"target_events={self.engine.scenario_config.seasonal_spawn.target_events_range} " f"interarrival={self.engine.scenario_config.seasonal_spawn.interarrival_minutes_range}"
-        )
-
-        for disaster_type in sorted(self.engine.scenario_config.seasonal_spawn.disasters):
-            profile = self.engine.scenario_config.seasonal_spawn.disasters[disaster_type]
-            lines.append(f"  {disaster_type}:")
-            countsline = "    counts:"
-            for season, value in sorted(profile.event_count_range_by_season.items()):
-                countsline += f" {season}={value}"
-            lines.append(countsline)
-            sizesline = "    sizes:"
-            for season, value in sorted(profile.size_range_by_season.items()):
-                sizesline += f" {season}={value}"
-            lines.append(sizesline)
-        return lines
-
-    def setup(self) -> tuple[Figure, list[Axes]]:
+    def _init_artists(self) -> None:
+        """
+        Create the figure, axes, and every reusable artist.
+        Called once, lazily, from update().
+        """
         fig = plt.figure(figsize=(16, 10), constrained_layout=True)
         grid = fig.add_gridspec(2, 2, width_ratios=[2.4, 1.2], height_ratios=[3.0, 1.2])
         ax_map = fig.add_subplot(grid[0, 0])
         ax_dirt = fig.add_subplot(grid[1, 0])
         ax_info = fig.add_subplot(grid[:, 1])
+
         ax_map.set_aspect("equal")
         ax_map.set_xlabel("X")
         ax_map.set_ylabel("Y")
         ax_map.grid(True, alpha=0.2)
-
-        if self.engine.road_graph is not None and self.engine.gis_config is not None:
-            self._gis_edge_segments = [(u, v) for u, v in self.engine.road_graph.edges()]
-            xs = [pt[0] for pt in self.engine.road_graph.nodes]
-            ys = [pt[1] for pt in self.engine.road_graph.nodes]
-            if xs and ys:
-                self._gis_bounds = (min(xs), max(xs), min(ys), max(ys))
-        else:
-            self._gis_edge_segments = None
-            self._gis_bounds = None
-
-        min_x, max_x, min_y, max_y = self._compute_map_bounds()
+        min_x, min_y, max_x, max_y = CLATSOP_ROAD_BOUNDS_UTM
         ax_map.set_xlim(min_x, max_x)
         ax_map.set_ylim(min_y, max_y)
+
+        self._load_roads(ax_map)
+
+        # Node scatter — nodes don't change marker type, so a single scatter works.
+        # Use facecolors= (not c=) so the artist is in direct-color mode from the start,
+        # which means set_facecolors() with named strings will always work.
+        self._node_scatter = ax_map.scatter([], [], facecolors=[], s=144, zorder=3, edgecolors="black", linewidths=0.5)
+
         ax_dirt.set_xlabel("Time")
         ax_dirt.set_ylabel("Dirt")
         ax_dirt.grid(True)
+
         ax_info.set_axis_off()
         ax_info.set_title("Debug State", loc="left")
-        plt.ion()
 
         self.fig = fig
-        self.axs = [ax_map, ax_dirt, ax_info]
-        return fig, self.axs
-
-    def _compute_map_bounds(self, snapshot: EngineSnapshot | None = None) -> tuple[float, float, float, float]:
-        x_points: list[float] = []
-        y_points: list[float] = []
-        if snapshot is None:
-            for node in self.engine.resource_nodes + [self.engine.idle_resources] + self.engine.disaster_store.items:
-                x_points.append(node.location[0])
-                y_points.append(node.location[1])
-                for resources in node.roster.values():
-                    for resource in resources:
-                        x_points.extend([resource.location[0], resource.prev_location[0]])
-                        y_points.extend([resource.location[1], resource.prev_location[1]])
-        else:
-            for node in snapshot.nodes:
-                x_points.append(node.location[0])
-                y_points.append(node.location[1])
-            for disaster in snapshot.disasters:
-                x_points.append(disaster.location[0])
-                y_points.append(disaster.location[1])
-            for resource in snapshot.resources:
-                x_points.extend([resource.location[0], resource.prev_location[0]])
-                y_points.extend([resource.location[1], resource.prev_location[1]])
-
-        if self._gis_bounds is not None:
-            x_points.extend([self._gis_bounds[0], self._gis_bounds[1]])
-            y_points.extend([self._gis_bounds[2], self._gis_bounds[3]])
-
-        if not x_points or not y_points:
-            return (-120, 120, -120, 120)
-
-        min_x = min(x_points)
-        max_x = max(x_points)
-        min_y = min(y_points)
-        max_y = max(y_points)
-        x_span = max(max_x - min_x, 1.0)
-        y_span = max(max_y - min_y, 1.0)
-        x_margin = max(5.0, x_span * 0.05)
-        y_margin = max(5.0, y_span * 0.05)
-        return (min_x - x_margin, max_x + x_margin, min_y - y_margin, max_y + y_margin)
+        self.axs = (ax_map, ax_dirt, ax_info)
+        plt.ion()
 
     def snapshot(self) -> EngineSnapshot:
+        env_now = self.engine.env.now
+
         nodes = [
             NodeSnapshot(
                 id=node.id,
@@ -194,217 +272,266 @@ class EngineVisualizer:
             )
             for node in self.engine.resource_nodes + [self.engine.idle_resources]
         ]
+
         disasters: list[DisasterSnapshot] = []
-        for disaster in self.engine.disaster_store.items:
-            dirt_level = disaster.dirt.level if isinstance(disaster, Landslide) else 0.0
+        for d in self.engine.disaster_store.items:
+            size = d.dirt.level if isinstance(d, Landslide) else d.debris.level if isinstance(d, WildfireDebris) else 0.0
             disasters.append(
                 DisasterSnapshot(
-                    id=disaster.id,
-                    location=disaster.location,
-                    color=disaster.render["color"],
-                    marker=disaster.render["marker"],
-                    label=disaster.render["label"],
-                    percent_remaining=disaster.percent_remaining(),
-                    dirt_level=dirt_level,
+                    id=d.id,
+                    location=d.location,
+                    color=d.render["color"],
+                    marker=d.render["marker"],
+                    label=d.render["label"],
+                    hatch=d.render["hatch"],
+                    percent_remaining=d.percent_remaining(),
+                    size=size,
                 )
             )
 
         resources: list[ResourceSnapshot] = []
-        for node in self.engine.resource_nodes + [self.engine.idle_resources] + self.engine.disaster_store.items:
-            for resource_type, node_resources in node.roster.items():
-                for resource in node_resources:
+        all_nodes = self.engine.resource_nodes + [self.engine.idle_resources] + self.engine.disaster_store.items
+        for node in all_nodes:
+            for rtype, rlist in node.roster.items():
+                for r in rlist:
                     resources.append(
                         ResourceSnapshot(
-                            id=resource.id,
-                            location=resource.location,
-                            prev_location=resource.prev_location,
-                            move_time=resource.move_time,
-                            move_start_time=resource.move_start_time,
-                            marker=resource_type.render["marker"],
-                            color=resource_type.render["color"],
+                            id=r.id,
+                            display_location=_interp_resource_location(r, env_now),
+                            marker=rtype.render["marker"],
+                            color=rtype.render["color"],
+                            label=str(r.id),
                         )
                     )
 
         return EngineSnapshot(
             policy_name=self.engine.policy.name,
             seed=self.engine.seed,
-            env_now=self.engine.env.now,
+            env_now=env_now,
             nodes=nodes,
             disasters=disasters,
             resources=resources,
         )
 
     def _record_history(self, snapshot: EngineSnapshot) -> None:
-        for disaster in snapshot.disasters:
-            if disaster.id not in self._disaster_histories:
-                self._disaster_histories[disaster.id] = [0.0] * len(self._time_points)
-                self._known_disaster_labels[disaster.id] = disaster.label
+        # Register new disasters (backfill zeros for ticks they didn't exist)
+        for d in snapshot.disasters:
+            if d.id not in self._disaster_size:
+                self._disaster_size[d.id] = [0.0] * len(self._time_points)
+                self._disaster_type_label[d.id] = d.label
+                self._disaster_hatch[d.id] = d.hatch
 
         self._time_points.append(snapshot.env_now)
-        for history in self._disaster_histories.values():
-            history.append(0.0)
 
-        for disaster in snapshot.disasters:
-            self._disaster_histories[disaster.id][-1] = disaster.dirt_level
+        # Append current dirt for every known disaster (0 if not active this tick)
+        active = {d.id: d.size for d in snapshot.disasters}
+        for did, history in self._disaster_size.items():
+            history.append(active.get(did, 0.0))
 
-    def _format_active_counts(self) -> str:
-        counts: dict[str, int] = {}
-        for disaster in self.engine.disaster_store.items:
-            label = disaster.render["label"]
-            counts[label] = counts.get(label, 0) + 1
-        if not counts:
-            return "none"
-        return ", ".join(f"{label}:{counts[label]}" for label in sorted(counts))
+    def _update_nodes(self, ax: Axes, nodes: list[NodeSnapshot]) -> None:
+        if not nodes and self._node_scatter:
+            self._node_scatter.set_offsets(np.zeros((0, 2)))
+            self._node_scatter.set_facecolor([])
+            _update_text_pool(ax, self._node_label_pool, [], [])
+            return
 
-    def _format_resolved_counts(self) -> str:
-        counts: dict[str, int] = {}
-        for metrics in self.engine.metrics.disaster_metrics.values():
-            if metrics["end_time"] is None:
-                continue
-            label = str(metrics["disaster_type"])
-            counts[label] = counts.get(label, 0) + 1
-        if not counts:
-            return "none"
-        return ", ".join(f"{label}:{counts[label]}" for label in sorted(counts))
+        positions = [n.location for n in nodes]
+        colors = [n.color for n in nodes]
+        texts = [f"{n.label}-{n.id}" for n in nodes]
 
-    def _spawn_debug_lines(self) -> list[str]:
-        season = self.engine.calendar.get_season().name.lower()
-        profiles = self.engine.scenario_config.seasonal_spawn.disasters
-        lines = ["Spawn Weights:"]
-        for disaster_type in sorted(profiles):
-            profile = profiles[disaster_type]
-            count_low, count_high = profile.event_count_range_by_season.get(season, (0, 0))
-            base_weight = max(0.0, (float(count_low) + float(count_high)) / 2.0)
-            weather = self.engine.calendar.get_weather_factor(disaster_type)
-            weight = base_weight
-            if self.engine.scenario_config.weather_model.enable_spawn_scaling:
-                max_boost = self.engine.scenario_config.weather_model.max_rate_weather_boost
-                weight *= 1.0 + max(0.0, min(max_boost, weather))
-            if self.engine.scenario_config.weather_model.use_vulnerability_weighting:
-                weight *= self.engine.scenario_config.get_vulnerability_multiplier(disaster_type)
-            size_low, size_high = profile.size_range_by_season.get(season, (0, 0))
-            lines.append(f"  {disaster_type:<15} w={weight:>4.1f} " f"cnt=({count_low},{count_high}) size=({size_low},{size_high}) wx={weather:.2f}")
-        return lines
+        if self._node_scatter:
+            self._node_scatter.set_offsets(np.array(positions))
+            self._node_scatter.set_facecolor(colors)
+        _update_text_pool(ax, self._node_label_pool, positions, texts, fontsize=8, zorder=4)
 
-    def _active_disaster_lines(self) -> list[str]:
-        lines = ["Active Disasters:"]
-        if not self.engine.disaster_store.items:
-            return ["Active Disasters: none"]
+    def _update_disasters(self, ax: Axes, disasters: list[DisasterSnapshot]) -> None:
+        # Reset all groups' buffers
+        for g in self._disaster_groups.values():
+            g.positions.clear()
+            g.colors.clear()
+            g.sizes.clear()
 
-        for disaster in sorted(self.engine.disaster_store.items, key=lambda item: item.id):
-            assigned = sum(len(resources) for resources in disaster.roster.values())
-            age = self.engine.env.now - disaster.created_time
-            lines.append(f"  #{disaster.id:<5} {disaster.render['label']:<12} " f"rem={disaster.percent_remaining()*100:>5.1f}% age={age:>6.1f}m res={assigned}")
-        # if len(self.engine.disaster_store.items) > 8:
-        #     lines.append(f"  ... {len(self.engine.disaster_store.items) - 8} more")
-        return lines
+        positions: list[tuple[float, float]] = []
+        texts: list[str] = []
 
-    def _debug_panel_text(self) -> str:
-        weather = self.engine.calendar.weather_state
-        get_summary = cast(Callable[[], dict[str, float | int]], self.engine.metrics.get_summary)
-        summary = get_summary()
-        season = self.engine.calendar.get_season().name.title()
-        lines = [
-            f"Calendar: {self.engine.calendar.current_date.strftime('%Y-%m-%d %H:%M')}",
+        for d in disasters:
+            size = (10 + d.percent_remaining * 100) ** 1.5
+            group = _get_or_create_marker_group(self._disaster_groups, ax, d.marker, zorder=4, base_size=64)
+            group.push(d.location, d.color, size)
+            positions.append(d.location)
+            texts.append(f"{d.label}-{d.id}\n{int(d.percent_remaining * 100)}%")
+
+        for g in self._disaster_groups.values():
+            g.flush()
+
+        _update_text_pool(ax, self._disaster_label_pool, positions, texts, fontsize=8, ha="center", va="center", zorder=5)
+
+    def _update_resources(self, ax: Axes, resources: list[ResourceSnapshot]) -> None:
+        # Reset all groups' buffers
+        for g in self._resource_groups.values():
+            g.positions.clear()
+            g.colors.clear()
+            g.sizes.clear()
+
+        positions: list[tuple[float, float]] = []
+        texts: list[str] = []
+        colors: list[str] = []
+
+        for r in resources:
+            group = _get_or_create_marker_group(self._resource_groups, ax, r.marker, zorder=6, base_size=64)
+            group.push(r.display_location, r.color, 64)
+            positions.append(r.display_location)
+            texts.append(r.label)
+            colors.append(r.color)
+
+        for g in self._resource_groups.values():
+            g.flush()
+
+        _update_text_pool(ax, self._resource_label_pool, positions, texts, offset=(2, 2), fontsize=7, zorder=7, colors=colors)
+
+    def _update_dirt_chart(self, ax: Axes) -> None:
+        if not self._disaster_size or len(self._time_points) < 2:
+            return
+
+        ids = tuple(sorted(self._disaster_size))
+        n = len(self._time_points)
+
+        y_data: list[list[float]] = []
+        labels: list[str] = []
+        hatch: list[str] = []
+        for i in ids:
+            h = self._disaster_size[i]
+            y_data.append(h)
+            labels.append(f"{self._disaster_type_label.get(i, 'D')}{i}")
+            hatch.append(self._disaster_hatch[i])
+
+        ax.clear()
+        ax.set_xlabel("Time")
+        ax.set_ylabel("Dirt")
+        ax.grid(True)
+
+        ax.stackplot(self._time_points, *y_data, labels=labels, hatch=hatch, alpha=0.8, step="post")
+        # ax.legend(loc="upper left", fontsize="small", framealpha=0.5)
+
+        self._dirt_drawn_ids = ids
+        self._dirt_drawn_len = n
+
+    def _update_info_panel(self, ax: Axes) -> None:
+        text = self._build_info_text()
+        if text == self._info_cache:
+            return
+        ax.clear()
+        ax.set_axis_off()
+        ax.set_title("Debug State", loc="left")
+        ax.text(0.0, 1.0, text, transform=ax.transAxes, va="top", ha="left", fontsize=9, family="monospace")
+        self._info_cache = text
+
+    def _capture_initial_resource_counts(self) -> dict[str, int]:
+        seen: dict[str, set[int]] = {}
+        all_nodes = self.engine.resource_nodes + [self.engine.idle_resources] + self.engine.disaster_store.items
+        for node in all_nodes:
+            for rtype, store in node.inventory.items():
+                ids = seen.setdefault(rtype.name, set())
+                for r in store.items:
+                    ids.add(r.id)
+            for rtype, rlist in node.roster.items():
+                ids = seen.setdefault(rtype.name, set())
+                for r in rlist:
+                    ids.add(r.id)
+        return {name: len(ids) for name, ids in sorted(seen.items())}
+
+    def _build_info_text(self) -> str:
+        if self._initial_resource_counts is None:
+            self._initial_resource_counts = self._capture_initial_resource_counts()
+
+        from typing import cast, Callable
+
+        summary = self.engine.metrics.get_summary()
+        cal = self.engine.calendar
+        season = cal.get_season().name.title()
+
+        # Active disaster counts
+        active_counts: dict[str, int] = {}
+        for d in self.engine.disaster_store.items:
+            active_counts[d.render["label"]] = active_counts.get(d.render["label"], 0) + 1
+        active_mix = ", ".join(f"{k}:{v}" for k, v in sorted(active_counts.items())) or "none"
+
+        # Resolved disaster counts
+        resolved_counts: dict[str, int] = {}
+        for m in self.engine.metrics.disaster_metrics.values():
+            if m["end_time"] is not None:
+                lbl = str(m["disaster_type"])
+                resolved_counts[lbl] = resolved_counts.get(lbl, 0) + 1
+        resolved_mix = ", ".join(f"{k}:{v}" for k, v in sorted(resolved_counts.items())) or "none"
+
+        resource_summary = ", ".join(f"{k}:{v}" for k, v in self._initial_resource_counts.items()) or "none"
+
+        lines: list[str] = [
+            f"Calendar: {cal.get_year_progress() * 365.25:.1f} days into year",
             f"Season:   {season}",
-            f"Year:     {self.engine.calendar.get_year()}  Progress: {self.engine.calendar.get_year_progress()*100:5.1f}%",
+            f"Progress: {cal.get_year_progress() * 100:5.1f}%",
             f"Decisions: {self.engine.decisions_made}",
-            f"Weather:  temp={weather['temperature']:5.1f}C  rain={weather['rain_intensity']:.2f}",
-            f"          wind={weather['wind_speed']:5.1f}  drought={weather['drought_index']:.2f}",
-            f"Disasters created/resolved: {summary['total_disasters_created']}/{summary['total_disasters_resolved']}",
+            f"Created/resolved: {summary['total_disasters_created']}/{summary['total_disasters_resolved']}",
             f"Active now: {len(self.engine.disaster_store.items)}",
-            f"Active mix: {self._format_active_counts()}",
-            f"Resolved mix: {self._format_resolved_counts()}",
-            f"Spawn gap min: {self.engine.scenario_config.seasonal_spawn.interarrival_minutes_range}",
+            f"Active mix: {active_mix}",
+            f"Resolved mix: {resolved_mix}",
             "",
-            *self._starting_config_lines(),
-            "",
-            *self._spawn_debug_lines(),
-            "",
-            *self._active_disaster_lines(),
+            "Starting Config:",
+            f"  resources: {resource_summary}",
         ]
+
+        # Spawn weights
+        profiles = self.engine.scenario_config.seasonal_spawn
+        season_key = cal.get_season().name.lower()
+        lines.append("")
+        lines.append("Spawn Weights:")
+        for dtype in sorted(profiles):
+            p = profiles[dtype]
+            cnt = p.event_count_range_by_season.get(season_key, (0, 0))
+            sz = p.size_range_by_season.get(season_key, (0, 0))
+            w = (cnt[0] + cnt[1]) / 2.0
+            lines.append(f"  {dtype:<15} w={w:>4.1f} cnt={cnt} size={sz}")
+
+        # Active disasters detail
+        lines.append("")
+        if not self.engine.disaster_store.items:
+            lines.append("Active Disasters: none")
+        else:
+            lines.append("Active Disasters:")
+            for d in sorted(self.engine.disaster_store.items, key=lambda x: x.id):
+                assigned = sum(len(r) for r in d.roster.values())
+                age = self.engine.env.now - d.created_time
+                lines.append(f"  #{d.id:<5} {d.render['label']:<12} " f"rem={d.percent_remaining() * 100:>5.1f}%" f" age={age:>6.1f}m res={assigned} size={d.get_scale():.3f}")
+
         return "\n".join(lines)
 
     def update(self, snapshot: EngineSnapshot) -> None:
-        render_started = perf_counter()
-        if self.fig is None or self.axs is None:
-            self.setup()
-        if self.axs is None:
-            return
-        self._record_history(snapshot)
+        if self.fig is None:
+            self._init_artists()
 
+        assert self.axs is not None
         ax_map, ax_dirt, ax_info = self.axs
-        ax_map.clear()
-        ax_map.set_aspect("equal")
-        ax_map.set_xlabel("X")
-        ax_map.set_ylabel("Y")
-        ax_map.grid(True, alpha=0.2)
-        min_x, max_x, min_y, max_y = self._compute_map_bounds(snapshot)
-        ax_map.set_xlim(min_x, max_x)
-        ax_map.set_ylim(min_y, max_y)
 
-        if self._gis_edge_segments:
-            roads = LineCollection(self._gis_edge_segments, colors="#b0b0b0", linewidths=0.3, alpha=0.5, zorder=1)
-            ax_map.add_collection(roads)
+        # FPS
+        now = perf_counter()
+        if self._last_wall_time is not None:
+            dt = now - self._last_wall_time
+            if dt > 0:
+                inst = 1.0 / dt
+                self._fps = inst if self._fps == 0 else self._fps * 0.9 + inst * 0.1
+        self._last_wall_time = now
+        self._frame += 1
 
-        if self._last_render_wall_time is not None:
-            elapsed = render_started - self._last_render_wall_time
-            if elapsed > 0:
-                instantaneous_fps = 1.0 / elapsed
-                if self._fps_estimate == 0.0:
-                    self._fps_estimate = instantaneous_fps
-                else:
-                    self._fps_estimate = self._fps_estimate * 0.9 + instantaneous_fps * 0.1
-        self._last_render_wall_time = render_started
+        # Title (throttled)
+        if self._frame % 10 == 0:
+            ax_map.set_title(f"Policy: {snapshot.policy_name} | Seed: {snapshot.seed} | " f"Time: {snapshot.env_now:.2f} | FPS: {self._fps:.1f}")
 
-        ax_map.set_title(f"Policy: {snapshot.policy_name} | Seed: {snapshot.seed} | " f"Time: {snapshot.env_now:.2f} | FPS: {self._fps_estimate:.1f}")
-
-        for node in snapshot.nodes:
-            ax_map.plot(node.location[0], node.location[1], node.color, markersize=12, zorder=3)
-            ax_map.text(node.location[0], node.location[1], f"{node.label}-{node.id}", fontsize=8, zorder=4)
-
-        for disaster in snapshot.disasters:
-            size = disaster.percent_remaining * 100
-            ax_map.plot(disaster.location[0], disaster.location[1], disaster.marker, color=disaster.color, markersize=10 + size, alpha=0.75, zorder=4)
-            ax_map.text(disaster.location[0], disaster.location[1], f"{disaster.label}-{disaster.id}\n{int(size)}%", fontsize=8, ha="center", va="center", zorder=5)
-
-        for resource in snapshot.resources:
-            frac = resource.id * (1 + math.sqrt(5)) / 2
-            loc1 = (cos(frac) * 10 + resource.location[0], sin(frac) * 10 + resource.location[1])
-            loc2 = (cos(frac) * 10 + resource.prev_location[0], sin(frac) * 10 + resource.prev_location[1])
-            time_frac = 1.0 if resource.move_time == 0 else (snapshot.env_now - resource.move_start_time) / resource.move_time
-            time_frac = max(0.0, min(1.0, time_frac))
-            loc = (
-                loc1[0] * time_frac + loc2[0] * (1 - time_frac),
-                loc1[1] * time_frac + loc2[1] * (1 - time_frac),
-            )
-            ax_map.plot(loc[0], loc[1], marker=resource.marker, color=resource.color, markersize=8, zorder=6)
-            ax_map.text(loc[0] + 2, loc[1] + 2, f"{resource.id}", color=resource.color, fontsize=7, zorder=7)
-
-        ax_dirt.clear()
-        ax_dirt.set_xlabel("Time")
-        ax_dirt.set_ylabel("Dirt")
-        ax_dirt.grid(True)
-        if self._disaster_histories and self._time_points:
-            ids = sorted(self._disaster_histories.keys())
-            y_data = [self._disaster_histories[i] for i in ids]
-            labels = [f"{self._known_disaster_labels.get(i, 'D')}{i}" for i in ids]
-            ax_dirt.stackplot(self._time_points, *y_data, labels=labels, alpha=0.8, step="post")
-            ax_dirt.legend(loc="upper left", fontsize="small", framealpha=0.5)
-
-        ax_info.clear()
-        ax_info.set_axis_off()
-        ax_info.set_title("Debug State", loc="left")
-        ax_info.text(
-            0.0,
-            1.0,
-            self._debug_panel_text(),
-            transform=ax_info.transAxes,
-            va="top",
-            ha="left",
-            fontsize=9,
-            family="monospace",
-        )
+        self._record_history(snapshot)
+        self._update_nodes(ax_map, snapshot.nodes)
+        self._update_disasters(ax_map, snapshot.disasters)
+        self._update_resources(ax_map, snapshot.resources)
+        self._update_dirt_chart(ax_dirt)
+        self._update_info_panel(ax_info)
 
         plt.draw()
         plt.pause(0.001)
@@ -412,3 +539,4 @@ class EngineVisualizer:
     def close(self) -> None:
         if self.fig is not None:
             plt.close(self.fig)
+            self.fig = None

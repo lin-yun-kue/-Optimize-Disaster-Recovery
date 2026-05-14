@@ -1,19 +1,17 @@
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass
 from typing import Callable
 
 import simpy
 
+from SimPyTest.gis_utils import travel_minutes_from_distance
+
 from .calendar import Season
 from .policies_tournament import (
     run_tournament_policy,
-    set_tournament_depth,
-    clear_tournament_cache,
 )
-from .real_world_params import travel_minutes_from_distance
-from .simulation import Disaster, Landslide, Resource, ResourceNode, ResourceType, SnowEvent
+from .simulation import Disaster, Landslide, Resource, ResourceType
 
 
 @dataclass
@@ -22,14 +20,8 @@ class Policy:
     func: Callable[[Resource, list[Disaster], simpy.Environment], Disaster | None]
 
 
-def get_dist(r: Resource, node: ResourceNode) -> float:
-    if r.engine.road_graph is not None:
-        return r.engine.get_distance(r, node)
-    return math.hypot(r.location[0] - node.location[0], r.location[1] - node.location[1])
-
-
 def is_useful(resource: Resource, disaster: Disaster) -> bool:
-    return resource.resource_type in disaster.needed_resources()
+    return resource.resource_type in disaster.required_resources
 
 
 def get_severity(disaster: Disaster) -> float:
@@ -53,25 +45,6 @@ def get_partner_count(disaster: Disaster, resource: Resource) -> int:
 
 
 # ============================================================================
-# MARK: Random Policy
-# ============================================================================
-
-
-def random_policy(resource: Resource, disasters: list[Disaster], _env: simpy.Environment) -> Disaster:
-    """
-    Randomly assigns a resource to any available disaster.
-    """
-
-    valid_targets = [d for d in disasters if is_useful(resource, d)]
-
-    if not valid_targets:
-        valid_targets = disasters
-
-    target = resource.engine.decision_rng.choice(valid_targets)
-    return target
-
-
-# ============================================================================
 # MARK: First Priority Policy
 # ============================================================================
 
@@ -81,13 +54,11 @@ def first_priority_policy(_resource: Resource, disasters: list[Disaster], _env: 
     Prioritizes the disaster with the MOST total resources currently assigned.
     """
 
-    def get_total_resources(ls: Disaster):
-        return sum(len(roster_set) for roster_set in ls.roster.values())
+    def get_total_resources(disaster: Disaster) -> int:
+        roster = disaster.roster
+        return len(roster.get(ResourceType.TRUCK, ())) + len(roster.get(ResourceType.EXCAVATOR, ()))
 
-    sorted_disasters = sorted(disasters, key=get_total_resources)
-
-    target = sorted_disasters[-1]
-    return target
+    return max(disasters, key=get_total_resources)
 
 
 # ============================================================================
@@ -106,7 +77,7 @@ def split_excavator_policy(resource: Resource, disasters: list[Disaster], _env: 
     rt = resource.resource_type
     target = None
 
-    if rt in [ResourceType.EXCAVATOR]:  # [,ResourceType.FIRE_TRUCK]
+    if rt in [ResourceType.EXCAVATOR]:
         target = min(candidates, key=lambda x: len(x.roster[rt]))
     else:
         target = max(candidates, key=lambda x: (get_partner_count(x, resource), -len(x.roster[rt])))
@@ -189,7 +160,7 @@ def cost_function_policy(resource: Resource, disasters: list[Disaster], _env: si
     candidates = [d for d in disasters if is_useful(resource, d)] or disasters
 
     def calculate_score(d: Disaster) -> float:
-        dist = get_dist(resource, d)
+        dist = d.engine.get_distance(resource, d)
         speed = resource.resource_type.specs["speed"]
         drive_cost = travel_minutes_from_distance(dist, speed)
 
@@ -207,16 +178,9 @@ def cost_function_policy(resource: Resource, disasters: list[Disaster], _env: si
 def get_seasonal_priority(disaster: Disaster) -> tuple[int, float]:
     engine = disaster.engine
     priority = 100
-    season = engine.calendar.get_season() if engine.calendar is not None else None
+    season = engine.calendar.get_season()
 
-    if isinstance(disaster, SnowEvent):
-        if season == Season.WINTER:
-            priority = 1
-        elif season == Season.FALL:
-            priority = 3
-        else:
-            priority = 10
-    elif isinstance(disaster, Landslide):
+    if isinstance(disaster, Landslide):
         if season in [Season.WINTER, Season.SPRING]:
             priority = 2
         elif season == Season.FALL:
@@ -230,7 +194,7 @@ def get_seasonal_priority(disaster: Disaster) -> tuple[int, float]:
 
 
 def _has_required_partners(disaster: Disaster, resource: Resource) -> bool:
-    needed = disaster.needed_resources()
+    needed = disaster.required_resources
     if resource.resource_type not in needed:
         return True
 
@@ -254,6 +218,83 @@ def tournament_policy_func(resource: Resource, disasters: list[Disaster], env: s
     return run_tournament_policy(resource, disasters, env, POLICIES)
 
 
+def smart_balance_policy(resource: Resource, disasters: list[Disaster], _env: simpy.Environment) -> Disaster:
+    """
+    Policy that intelligently balances resources to avoid deadlocks.
+    - Excavators: Go to sites with fewest excavators (spread out)
+    - Trucks: Go to sites that already have excavators (form pairs)
+    - Consider distance to minimize travel time
+    """
+    candidates = [d for d in disasters if is_useful(resource, d)] or disasters
+    rt = resource.resource_type
+
+    def score(d: Disaster) -> tuple[float, int, float]:
+        exc_count = len(d.roster[ResourceType.EXCAVATOR])
+        truck_count = len(d.roster[ResourceType.TRUCK])
+        dist = d.engine.get_distance(resource, d)
+
+        if rt == ResourceType.EXCAVATOR:
+            if truck_count == 0:
+                return (0, exc_count, dist)
+            return (1, exc_count, dist)
+        else:
+            if exc_count == 0:
+                return (0, -truck_count, dist)
+            return (1, -truck_count, dist)
+
+    return min(candidates, key=score)
+
+
+def greedy_finish_policy(resource: Resource, disasters: list[Disaster], _env: simpy.Environment) -> Disaster:
+    """
+    Aggressively finish smallest jobs first to free up resources.
+    Helps avoid deadlocks by clearing sites completely.
+    """
+    candidates = [d for d in disasters if is_useful(resource, d)] or disasters
+    rt = resource.resource_type
+
+    def progress(d: Disaster) -> float:
+        if isinstance(d, Landslide):
+            if d.initial_size > 0:
+                return 1.0 - (d.dirt.level / d.initial_size)
+        return 0.0
+
+    def remaining_work(d: Disaster) -> float:
+        if isinstance(d, Landslide):
+            return d.dirt.level
+        return get_severity(d)
+
+    if rt == ResourceType.EXCAVATOR:
+        return min(candidates, key=lambda d: (progress(d), -remaining_work(d)))
+    else:
+        return min(candidates, key=lambda d: (progress(d), remaining_work(d)))
+
+
+def nearest_first_policy(resource: Resource, disasters: list[Disaster], _env: simpy.Environment) -> Disaster:
+    """
+    Uses balanced_ratio logic but adds distance as a tie-breaker.
+    Balances truck/excavator ratio, distance resolves ties.
+    """
+    candidates = [d for d in disasters if is_useful(resource, d)] or disasters
+    rt = resource.resource_type
+
+    def score(d: Disaster) -> tuple[float, float]:
+        exc_count = len(d.roster[ResourceType.EXCAVATOR])
+        truck_count = len(d.roster[ResourceType.TRUCK])
+        if rt == ResourceType.TRUCK:
+            if exc_count == 0:
+                ratio = 1000.0
+            else:
+                ratio = truck_count / exc_count
+        else:
+            ratio = exc_count
+
+        dist = d.engine.get_distance(resource, d)
+        return (ratio, dist)
+
+    return min(candidates, key=score)
+
+
 POLICIES: list[Policy] = [
     # Policy("random", random_policy),  # 0%
     Policy("first_priority", first_priority_policy),
@@ -263,6 +304,9 @@ POLICIES: list[Policy] = [
     Policy("smart_split", smart_split_policy),
     # Policy("cost_function", cost_function_policy),
     Policy("seasonal_priority", seasonal_priority_policy),
+    # Policy("smart_balance", smart_balance_policy),
+    # Policy("greedy_finish", greedy_finish_policy),
+    Policy("nearest_first", nearest_first_policy),
 ]
 
 TOURNAMENT_POLICY = Policy("tournament", tournament_policy_func)

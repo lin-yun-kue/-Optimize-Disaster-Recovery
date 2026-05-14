@@ -1,50 +1,59 @@
 """
-Benchmark file that tests all policies and PPO model on shared seeds.
-Tests both with and without GIS for comparison.
+Canonical benchmark runner for heuristic, PPO, and dispatch-ML evaluation.
 """
 
 from __future__ import annotations
+
 import json
 import statistics
 import time
-from datetime import datetime, timezone
+from argparse import ArgumentParser
+from collections import Counter, defaultdict
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypedDict
-from collections import defaultdict
-from argparse import ArgumentParser
 
-from SimPyTest import SimPySimulationEngine
-from SimPyTest.clatsop_spatial import CLATSOP_LOCAL_COORD_MAX
-from SimPyTest.gym import DisasterResponseGym
-from SimPyTest.scenario_types import ScenarioConfig
-from SimPyTest.visualization import EngineVisualizer
-
-# from SimPyTest.benchmark_runner import run_policy_episode, run_ppo_episode
-from SimPyTest.evaluation import EVALUATION_PROTOCOL_VERSION, KPIBundle, build_simulation_summary, compute_kpi_bundle, compute_objective_score
-from SimPyTest.policies import POLICIES, TOURNAMENT_POLICY, Policy, set_tournament_depth
-from scripts.training.ppo.ppo_dispatch import EpisodeResult as PPOEpisodeResult
-from scripts.training.ppo.ppo_dispatch import load_model, run_policy_episode as run_ppo_policy_episode, select_device
-from SimPyTest.gis_utils import Depot, GISConfig, Landfill, build_road_graph, load_and_prune_roads
-from SimPyTest.real_world_params import meters_to_miles
-from SimPyTest.scenario_types import (
-    DistanceModelConfig,
-    OperationalPriorsConfig,
-    ResourceCounts,
-    SeasonalDisasterConfig,
-    SeasonalSpawnConfig,
-    WeatherModelConfig,
+from SimPyTest.benchmark_catalog import (
+    BENCHMARK_SUITES,
+    OBJECTIVE_VERSION,
+    SCENARIO_CATALOG_VERSION,
+    SCENARIO_SPECS,
+    create_scenario_config as catalog_create_scenario_config,
 )
+from SimPyTest.engine import SimPySimulationEngine
+from SimPyTest.evaluation import ResearchMetricBundle, compute_research_metric_bundle, compute_training_objective_score
+from SimPyTest.policies import POLICIES, TOURNAMENT_POLICY, Policy
+from SimPyTest.policies_tournament import (
+    clear_tournament_cache,
+    get_tournament_profile_stats,
+    reset_tournament_profile_stats,
+    set_tournament_depth,
+    set_tournament_max_decisions,
+)
+from SimPyTest.scenario_types import ScenarioConfig
 
 if TYPE_CHECKING:
+    from SimPyTest.gis_utils import GISConfig
     from scripts.training.mlp.ml_dispatch import TrainedDispatchPolicy
+    from scripts.training.ppo.ppo_dispatch import EpisodeResult as PPOEpisodeResult
+
+
+ROAD_SHAPEFILE = "maps/tl_2024_41007_roads/tl_2024_41007_roads.shp"
+DEFAULT_REFERENCE_POLICY = "balanced_ratio"
+
+
+class EpisodeRecord(TypedDict):
+    seed: int
+    success: bool
+    terminal_outcome: str | None
+    training_objective_score: float
+    research_metrics: ResearchMetricBundle
+    time_with_disasters: float
+    wall_time_s: float
+    decisions: int
 
 
 class PolicyResult(TypedDict):
-    success: list[float]
-    success_wall: list[float]
-    objective: list[float]
-    kpis: list[KPIBundle]
-    fail: int
+    records: list[EpisodeRecord]
 
 
 class PPOModelSpec(TypedDict):
@@ -59,398 +68,56 @@ class DispatchModelSpec(TypedDict):
     metadata: dict[str, Any]
 
 
-depots: list[Depot] = [
-    {
-        "Longitude": -123.92616052570274,
-        "Latitude": 46.16262226957932,
-        "Name": "ODOT Warrenton",
-        "numExc": 1,
-        "numTrucks": 1,
-        "color": "green",
-    },
-    {
-        "Longitude": -123.92250095724509,
-        "Latitude": 45.984013191819535,
-        "Name": "ODOT Seaside",
-        "numExc": 1,
-        "numTrucks": 2,
-        "color": "yellow",
-    },
-    {
-        "Longitude": -123.81788435312336,
-        "Latitude": 45.91011185257814,
-        "Name": "ODOT Necanium",
-        "numExc": 1,
-        "numTrucks": 3,
-        "color": "purple",
-    },
-]
-
-landfills: list[Landfill] = [
-    {"Label": "A", "Longitude": -123.70105856996436, "Latitude": 45.91375387223106, "Name": "Random Landfill"},
-    {"Label": "B", "Longitude": -123.80828890576535, "Latitude": 46.17804487993376, "Name": "Astoria Recology"},
-    {
-        "Label": "C",
-        "Longitude": -123.90783452733942,
-        "Latitude": 45.95217222679762,
-        "Name": "Seaside Knife River Quarry",
-    },
-]
-
-ROAD_SHAPEFILE = "maps/tl_2024_41007_roads/tl_2024_41007_roads.shp"
+class PairedComparison(TypedDict):
+    reference: str
+    challenger: str
+    shared_seed_count: int
+    challenger_only_successes: int
+    reference_only_successes: int
+    terminal_outcomes: dict[str, int]
+    mean_training_objective_delta: float | None
+    mean_research_metric_delta: dict[str, float | None]
 
 
-class Suite(TypedDict):
-    preset: str
-    compare_gis: bool
+class ScenarioReport(TypedDict):
+    scenario: str
+    gis_enabled: bool
+    reference_policy: str | None
+    approaches: dict[str, dict[str, Any]]
+    paired_vs_reference: dict[str, PairedComparison]
 
 
-STANDARD_BENCHMARK_SUITES: dict[str, Suite] = {
-    "clatsop_winter_no_gis": {"preset": "clatsop_winter_ops", "compare_gis": False},
-    "clatsop_summer_no_gis": {"preset": "clatsop_summer_ops", "compare_gis": False},
-    "storm_stress_no_gis": {"preset": "clatsop_storm_stress", "compare_gis": False},
-    "landslide_curriculum_no_gis": {"preset": "clatsop_landslide_curriculum", "compare_gis": False},
-    "landslide_ops_no_gis": {"preset": "clatsop_landslide_ops", "compare_gis": False},
-    "single_landslide_micro_no_gis": {"preset": "single_landslide_micro", "compare_gis": False},
-    "clatsop_winter_compare_gis": {"preset": "clatsop_winter_ops", "compare_gis": True},
-    "clatsop_summer_compare_gis": {"preset": "clatsop_summer_ops", "compare_gis": True},
-}
+class SuiteReport(TypedDict):
+    suite_name: str
+    seeds: list[int]
+    gis_enabled: bool
+    reference_policy: str | None
+    scenarios: list[ScenarioReport]
+    macro_summary: dict[str, dict[str, Any]]
 
 
-def create_gis_config():
-    """Create GIS configuration with pruned road network for faster simulation."""
+def create_gis_config() -> GISConfig | None:
+    from SimPyTest.gis_utils import GISConfig, build_road_graph, load_and_prune_roads
+
     try:
-        # Load and prune road network while maintaining connectivity
-        # Uses major roads (I=Interstate, U=US Highway, S=State) but ensures all depots
-        # and landfills remain connected to the network
-        roads_gdf = load_and_prune_roads(ROAD_SHAPEFILE, depots=depots, landfills=landfills, enabled_types=["I", "U", "S"])
+        roads_gdf = load_and_prune_roads(ROAD_SHAPEFILE, enabled_types=["I", "U", "S"])
         road_graph = build_road_graph(roads_gdf)
-        return GISConfig(roads_gdf=roads_gdf, road_graph=road_graph, depots=depots, landfills=landfills)
-    except Exception as e:
-        print(f"Warning: Could not load GIS data: {e}")
+    except Exception as exc:
+        print(f"Warning: Could not load GIS data: {exc}")
         return None
+    return GISConfig(roads_gdf=roads_gdf, road_graph=road_graph)
 
 
-def create_scenario_config(preset: str = "clatsop_winter_ops", gis_config: GISConfig | None = None) -> ScenarioConfig:
-    """Create scenario configuration based on preset.
-
-    Supported preset levels:
-    - clatsop_winter_ops: winter coastal operations
-    - clatsop_summer_ops: summer wildfire/debris mix
-    - clatsop_storm_stress: severe storm season with heavier event pressure
-    - clatsop_landslide_curriculum: easy landslide-only curriculum for PPO debugging
-    - clatsop_landslide_curriculum_stage2: slightly harder landslide-only curriculum stage
-    - clatsop_landslide_ops: landslide-only operations with trucks and excavators
-    - single_landslide_micro: one tiny deterministic landslide with fixed resources
-    """
-    from datetime import datetime
-
-    # Default seasonal profiles now live with benchmark profile constructors.
-    base_profiles = {
-        "landslide": SeasonalDisasterConfig(
-            event_count_range_by_season={"winter": (3, 8), "spring": (2, 6), "summer": (0, 2), "fall": (2, 6)},
-            size_range_by_season={"winter": (200, 5000), "spring": (100, 3500), "summer": (50, 1200), "fall": (100, 4000)},
-        ),
-        "snow": SeasonalDisasterConfig(
-            event_count_range_by_season={"winter": (2, 8), "spring": (0, 2), "summer": (0, 0), "fall": (0, 1)},
-            size_range_by_season={"winter": (2, 24), "spring": (1, 8), "summer": (1, 2), "fall": (1, 6)},
-        ),
-        "wildfire_debris": SeasonalDisasterConfig(
-            event_count_range_by_season={"winter": (0, 0), "spring": (0, 2), "summer": (2, 7), "fall": (1, 5)},
-            size_range_by_season={"winter": (20, 100), "spring": (50, 300), "summer": (100, 1500), "fall": (80, 1200)},
-        ),
-        "flood": SeasonalDisasterConfig(
-            event_count_range_by_season={"winter": (2, 6), "spring": (1, 4), "summer": (0, 1), "fall": (1, 3)},
-            size_range_by_season={"winter": (24, 240), "spring": (24, 168), "summer": (12, 72), "fall": (24, 168)},
-        ),
-    }
-
-    if preset == "clatsop_winter_ops":
-        return ScenarioConfig(
-            resource_counts=ResourceCounts(trucks=(14, 22), excavators=(7, 11), snowplows=(3, 7), assessment_vehicles=(1, 2)),
-            seasonal_spawn=SeasonalSpawnConfig(
-                target_events_range=(10, 18),
-                interarrival_minutes_range=(60.0, 720.0),
-                disasters=base_profiles,
-            ),
-            weather_model=WeatherModelConfig(
-                enable_spawn_scaling=True,
-                enable_dispatch_scaling=True,
-                use_vulnerability_weighting=False,
-                storm_dispatch_delay_multiplier=2.0,
-            ),
-            operational_priors=OperationalPriorsConfig(
-                time_variance=0.1,
-                use_dispatch_delay_priors=True,
-            ),
-            distance_model=DistanceModelConfig(
-                non_gis_distance_unit_miles=meters_to_miles(1.0),
-                spawn_distance_range=(0, CLATSOP_LOCAL_COORD_MAX),
-            ),
-            calendar_start_date=datetime(2024, 1, 1),
-            calendar_duration_years=1,
-            gis_config=gis_config,
-        )
-    if preset == "clatsop_summer_ops":
-        summer_profiles = dict(base_profiles)
-        summer_profiles["wildfire_debris"] = SeasonalDisasterConfig(
-            event_count_range_by_season={"winter": (0, 0), "spring": (1, 3), "summer": (4, 10), "fall": (2, 6)},
-            size_range_by_season={"winter": (20, 120), "spring": (80, 400), "summer": (120, 1500), "fall": (100, 1200)},
-        )
-        return ScenarioConfig(
-            resource_counts=ResourceCounts(trucks=(12, 20), excavators=(6, 10), snowplows=(0, 1), assessment_vehicles=(1, 2)),
-            seasonal_spawn=SeasonalSpawnConfig(
-                target_events_range=(9, 16),
-                interarrival_minutes_range=(90.0, 1440.0),
-                disasters=summer_profiles,
-            ),
-            weather_model=WeatherModelConfig(
-                enable_spawn_scaling=True,
-                enable_dispatch_scaling=True,
-                use_vulnerability_weighting=False,
-                storm_dispatch_delay_multiplier=1.6,
-            ),
-            operational_priors=OperationalPriorsConfig(
-                time_variance=0.1,
-                use_dispatch_delay_priors=True,
-                flood_assessment_minutes_range=(30.0, 90.0),
-                flood_status_check_interval_minutes=45.0,
-            ),
-            distance_model=DistanceModelConfig(
-                non_gis_distance_unit_miles=meters_to_miles(1.0),
-                spawn_distance_range=(0, CLATSOP_LOCAL_COORD_MAX),
-            ),
-            calendar_start_date=datetime(2024, 7, 1),
-            calendar_duration_years=1,
-            gis_config=gis_config,
-        )
-    if preset == "clatsop_storm_stress":
-        stress_profiles = dict(base_profiles)
-        stress_profiles["landslide"] = SeasonalDisasterConfig(
-            event_count_range_by_season={"winter": (6, 12), "spring": (4, 8), "summer": (1, 3), "fall": (4, 10)},
-            size_range_by_season={"winter": (700, 7000), "spring": (400, 5000), "summer": (200, 2500), "fall": (500, 6000)},
-        )
-        return ScenarioConfig(
-            resource_counts=ResourceCounts(trucks=(10, 16), excavators=(5, 9), snowplows=(2, 5), assessment_vehicles=(1, 2)),
-            seasonal_spawn=SeasonalSpawnConfig(
-                target_events_range=(14, 24),
-                interarrival_minutes_range=(45.0, 540.0),
-                disasters=stress_profiles,
-            ),
-            weather_model=WeatherModelConfig(
-                enable_spawn_scaling=True,
-                enable_dispatch_scaling=True,
-                use_vulnerability_weighting=False,
-                storm_dispatch_delay_multiplier=2.3,
-            ),
-            operational_priors=OperationalPriorsConfig(
-                time_variance=0.15,
-                use_dispatch_delay_priors=True,
-            ),
-            distance_model=DistanceModelConfig(
-                non_gis_distance_unit_miles=meters_to_miles(1.0),
-                spawn_distance_range=(0, CLATSOP_LOCAL_COORD_MAX),
-            ),
-            calendar_start_date=datetime(2024, 11, 1),
-            calendar_duration_years=1,
-            gis_config=gis_config,
-        )
-    if preset == "clatsop_landslide_curriculum":
-        zero_events = {"winter": (0, 0), "spring": (0, 0), "summer": (0, 0), "fall": (0, 0)}
-        landslide_only_profiles = {
-            "landslide": SeasonalDisasterConfig(
-                event_count_range_by_season={"winter": (1, 1), "spring": (1, 1), "summer": (1, 1), "fall": (1, 1)},
-                size_range_by_season={"winter": (120, 450), "spring": (120, 420), "summer": (100, 320), "fall": (120, 440)},
-            ),
-            "snow": SeasonalDisasterConfig(event_count_range_by_season=zero_events, size_range_by_season={"winter": (1, 1), "spring": (1, 1), "summer": (1, 1), "fall": (1, 1)}),
-            "wildfire_debris": SeasonalDisasterConfig(event_count_range_by_season=zero_events, size_range_by_season={"winter": (1, 1), "spring": (1, 1), "summer": (1, 1), "fall": (1, 1)}),
-            "flood": SeasonalDisasterConfig(event_count_range_by_season=zero_events, size_range_by_season={"winter": (1, 1), "spring": (1, 1), "summer": (1, 1), "fall": (1, 1)}),
-        }
-        return ScenarioConfig(
-            resource_counts=ResourceCounts(trucks=6, excavators=3, snowplows=0, assessment_vehicles=0),
-            seasonal_spawn=SeasonalSpawnConfig(
-                target_events_range=(1, 1),
-                interarrival_minutes_range=(300.0, 600.0),
-                disasters=landslide_only_profiles,
-            ),
-            weather_model=WeatherModelConfig(
-                enable_spawn_scaling=False,
-                enable_dispatch_scaling=False,
-                use_vulnerability_weighting=False,
-                storm_dispatch_delay_multiplier=1.0,
-            ),
-            operational_priors=OperationalPriorsConfig(
-                time_variance=0.0,
-                use_dispatch_delay_priors=False,
-            ),
-            distance_model=DistanceModelConfig(
-                non_gis_distance_unit_miles=meters_to_miles(1.0),
-                spawn_distance_range=(0, int(CLATSOP_LOCAL_COORD_MAX * 0.15)),
-            ),
-            calendar_start_date=datetime(2024, 1, 1),
-            calendar_duration_years=1,
-            gis_config=gis_config,
-        )
-    if preset == "clatsop_landslide_curriculum_stage2":
-        zero_events = {"winter": (0, 0), "spring": (0, 0), "summer": (0, 0), "fall": (0, 0)}
-        landslide_only_profiles = {
-            "landslide": SeasonalDisasterConfig(
-                event_count_range_by_season={"winter": (2, 2), "spring": (2, 2), "summer": (1, 1), "fall": (2, 2)},
-                size_range_by_season={"winter": (150, 650), "spring": (150, 620), "summer": (120, 360), "fall": (150, 640)},
-            ),
-            "snow": SeasonalDisasterConfig(event_count_range_by_season=zero_events, size_range_by_season={"winter": (1, 1), "spring": (1, 1), "summer": (1, 1), "fall": (1, 1)}),
-            "wildfire_debris": SeasonalDisasterConfig(event_count_range_by_season=zero_events, size_range_by_season={"winter": (1, 1), "spring": (1, 1), "summer": (1, 1), "fall": (1, 1)}),
-            "flood": SeasonalDisasterConfig(event_count_range_by_season=zero_events, size_range_by_season={"winter": (1, 1), "spring": (1, 1), "summer": (1, 1), "fall": (1, 1)}),
-        }
-        return ScenarioConfig(
-            resource_counts=ResourceCounts(trucks=10, excavators=5, snowplows=0, assessment_vehicles=0),
-            seasonal_spawn=SeasonalSpawnConfig(
-                target_events_range=(2, 2),
-                interarrival_minutes_range=(240.0, 720.0),
-                disasters=landslide_only_profiles,
-            ),
-            weather_model=WeatherModelConfig(
-                enable_spawn_scaling=False,
-                enable_dispatch_scaling=False,
-                use_vulnerability_weighting=False,
-                storm_dispatch_delay_multiplier=1.0,
-            ),
-            operational_priors=OperationalPriorsConfig(
-                time_variance=0.0,
-                use_dispatch_delay_priors=False,
-            ),
-            distance_model=DistanceModelConfig(
-                non_gis_distance_unit_miles=meters_to_miles(1.0),
-                spawn_distance_range=(0, int(CLATSOP_LOCAL_COORD_MAX * 0.2)),
-            ),
-            calendar_start_date=datetime(2024, 1, 1),
-            calendar_duration_years=1,
-            gis_config=gis_config,
-        )
-    if preset == "clatsop_landslide_ops":
-        zero_events = {"winter": (0, 0), "spring": (0, 0), "summer": (0, 0), "fall": (0, 0)}
-        landslide_only_profiles = {
-            "landslide": SeasonalDisasterConfig(
-                event_count_range_by_season={"winter": (5, 10), "spring": (3, 7), "summer": (1, 3), "fall": (4, 8)},
-                size_range_by_season={"winter": (300, 5000), "spring": (200, 4000), "summer": (100, 1800), "fall": (250, 4500)},
-            ),
-            "snow": SeasonalDisasterConfig(event_count_range_by_season=zero_events, size_range_by_season={"winter": (1, 1), "spring": (1, 1), "summer": (1, 1), "fall": (1, 1)}),
-            "wildfire_debris": SeasonalDisasterConfig(event_count_range_by_season=zero_events, size_range_by_season={"winter": (1, 1), "spring": (1, 1), "summer": (1, 1), "fall": (1, 1)}),
-            "flood": SeasonalDisasterConfig(event_count_range_by_season=zero_events, size_range_by_season={"winter": (1, 1), "spring": (1, 1), "summer": (1, 1), "fall": (1, 1)}),
-        }
-        return ScenarioConfig(
-            resource_counts=ResourceCounts(trucks=(12, 18), excavators=(6, 10), snowplows=0, assessment_vehicles=0),
-            seasonal_spawn=SeasonalSpawnConfig(
-                target_events_range=(8, 16),
-                interarrival_minutes_range=(90.0, 900.0),
-                disasters=landslide_only_profiles,
-            ),
-            weather_model=WeatherModelConfig(
-                enable_spawn_scaling=True,
-                enable_dispatch_scaling=True,
-                use_vulnerability_weighting=False,
-                storm_dispatch_delay_multiplier=1.8,
-            ),
-            operational_priors=OperationalPriorsConfig(
-                time_variance=0.1,
-                use_dispatch_delay_priors=True,
-            ),
-            distance_model=DistanceModelConfig(
-                non_gis_distance_unit_miles=meters_to_miles(1.0),
-                spawn_distance_range=(0, CLATSOP_LOCAL_COORD_MAX),
-            ),
-            calendar_start_date=datetime(2024, 1, 1),
-            calendar_duration_years=1,
-            gis_config=gis_config,
-        )
-    if preset == "single_landslide_micro":
-        zero_events = {"winter": (0, 0), "spring": (0, 0), "summer": (0, 0), "fall": (0, 0)}
-        micro_profiles = {
-            "landslide": SeasonalDisasterConfig(
-                event_count_range_by_season={"winter": (1, 1), "spring": (0, 0), "summer": (0, 0), "fall": (0, 0)},
-                size_range_by_season={"winter": (200, 200), "spring": (200, 200), "summer": (200, 200), "fall": (200, 200)},
-            ),
-            "snow": SeasonalDisasterConfig(event_count_range_by_season=zero_events, size_range_by_season={"winter": (1, 1), "spring": (1, 1), "summer": (1, 1), "fall": (1, 1)}),
-            "wildfire_debris": SeasonalDisasterConfig(event_count_range_by_season=zero_events, size_range_by_season={"winter": (1, 1), "spring": (1, 1), "summer": (1, 1), "fall": (1, 1)}),
-            "flood": SeasonalDisasterConfig(event_count_range_by_season=zero_events, size_range_by_season={"winter": (1, 1), "spring": (1, 1), "summer": (1, 1), "fall": (1, 1)}),
-        }
-        return ScenarioConfig(
-            resource_counts=ResourceCounts(trucks=10, excavators=2, snowplows=0, assessment_vehicles=0),
-            seasonal_spawn=SeasonalSpawnConfig(
-                target_events_range=(1, 1),
-                interarrival_minutes_range=(1.0, 1.0),
-                disasters=micro_profiles,
-            ),
-            weather_model=WeatherModelConfig(
-                enable_spawn_scaling=False,
-                enable_dispatch_scaling=False,
-                use_vulnerability_weighting=False,
-                storm_dispatch_delay_multiplier=1.0,
-            ),
-            operational_priors=OperationalPriorsConfig(
-                time_variance=0.0,
-                use_dispatch_delay_priors=False,
-            ),
-            distance_model=DistanceModelConfig(
-                non_gis_distance_unit_miles=meters_to_miles(1.0),
-                spawn_distance_range=(0, 0),
-            ),
-            calendar_start_date=datetime(2024, 1, 1),
-            calendar_duration_years=1,
-            gis_config=gis_config,
-        )
-
-    raise ValueError(f"Unknown preset '{preset}'.")
+def create_scenario_config(preset: str, gis_config: GISConfig | None) -> ScenarioConfig:
+    return catalog_create_scenario_config(preset, gis_config)
 
 
-def summarize_results(results: defaultdict[str, PolicyResult]) -> dict[str, dict[str, Any]]:
-    """Machine-readable summary for result serialization."""
-    summaries: dict[str, dict[str, Any]] = {}
-
-    for name, data in results.items():
-        success_times = data["success"]
-        success_wall_times = data.get("success_wall", [])
-        objective_scores = data.get("objective", [])
-        kpi_records = data.get("kpis", [])
-        fail_count = data["fail"]
-        total_runs = len(success_times) + fail_count
-        success_rate = (len(success_times) / total_runs) * 100 if total_runs > 0 else 0.0
-        kpi_means: dict[str, float] = {}
-        if kpi_records:
-            kpi_keys = sorted(kpi_records[0].keys())
-            for key in kpi_keys:
-                kpi_means[key] = statistics.mean([record[key] for record in kpi_records])
-
-        summaries[name] = {
-            "runs": total_runs,
-            "successes": len(success_times),
-            "failures": fail_count,
-            "success_rate": success_rate,
-            "avg_sim_time": statistics.mean(success_times) if success_times else None,
-            "avg_wall_time_s": statistics.mean(success_wall_times) if success_wall_times else None,
-            "avg_objective_score": statistics.mean(objective_scores) if objective_scores else None,
-            "objective_min": min(objective_scores) if objective_scores else None,
-            "objective_max": max(objective_scores) if objective_scores else None,
-            "kpi_mean": kpi_means if kpi_means else None,
-            "sim_min": min(success_times) if success_times else None,
-            "sim_max": max(success_times) if success_times else None,
-        }
-    return summaries
-
-
-def run_policy_episode(policy: Policy, seed: int, scenario_config: ScenarioConfig, live_plot: bool) -> tuple[bool, float, float, float, KPIBundle]:
-    t0 = time.perf_counter()
-    engine = SimPySimulationEngine(policy=policy, seed=seed, scenario_config=scenario_config)
-    if live_plot:
-        engine.visualizer = EngineVisualizer(engine)
-    engine.initialize_world()
-    success = engine.run()
-    summary = build_simulation_summary(engine)
-    return success, summary.non_idle_time, time.perf_counter() - t0, compute_objective_score(summary), compute_kpi_bundle(summary)
+def _new_policy_result() -> PolicyResult:
+    return {"records": []}
 
 
 def default_ppo_label(model_path: Path, metadata: dict[str, Any]) -> str:
-    scenario_name = metadata.get("scenario_name")
+    scenario_name = metadata.get("scenario_name") or metadata.get("final_stage_scenario_name")
     if scenario_name:
         return f"ppo_{scenario_name}"
     return f"ppo_{model_path.stem}"
@@ -464,11 +131,7 @@ def load_ppo_model_spec(model_path: str | None) -> PPOModelSpec | None:
         raise FileNotFoundError(f"PPO model not found: {path}")
     metadata_path = path.parent / "metadata.json"
     metadata = json.loads(metadata_path.read_text(encoding="utf-8")) if metadata_path.exists() else {}
-    return {
-        "label": default_ppo_label(path, metadata),
-        "path": str(path.resolve()),
-        "metadata": metadata,
-    }
+    return {"label": default_ppo_label(path, metadata), "path": str(path.resolve()), "metadata": metadata}
 
 
 def default_dispatch_label(model_path: Path, metadata: dict[str, Any]) -> str:
@@ -488,22 +151,74 @@ def load_dispatch_model_spec(model_path: str | None) -> DispatchModelSpec | None
         raise FileNotFoundError(f"Dispatch model not found: {path}")
     metadata_path = path.parent / "dispatch_model_meta.json"
     metadata = json.loads(metadata_path.read_text(encoding="utf-8")) if metadata_path.exists() else {}
+    return {"label": default_dispatch_label(path, metadata), "path": str(path.resolve()), "metadata": metadata}
+
+
+def run_policy_episode(policy: Policy, seed: int, scenario_config: ScenarioConfig, live_plot: bool) -> EpisodeRecord:
+    t0 = time.perf_counter()
+    if policy.name == TOURNAMENT_POLICY.name:
+        reset_tournament_profile_stats()
+    engine = SimPySimulationEngine(policy=policy, seed=seed, scenario_config=scenario_config)
+    if live_plot:
+        from SimPyTest.visualization import EngineVisualizer
+
+        engine.visualizer = EngineVisualizer(engine)
+    engine.initialize_world()
+    success = engine.run()
+    summary = engine.summary()
+    if policy.name == TOURNAMENT_POLICY.name:
+        stats = get_tournament_profile_stats()
+        hit_rate = stats["worker_cache_hits"] / stats["worker_calls"] if stats["worker_calls"] else 0.0
+        avg_worker_ms = (stats["worker_time_s"] / stats["worker_calls"] * 1000.0) if stats["worker_calls"] else 0.0
+        avg_materialize_ms = (stats["materialize_time_s"] / stats["materialize_calls"] * 1000.0) if stats["materialize_calls"] else 0.0
+        print(
+            "      [tournament-profile] "
+            f"calls={stats['tournament_calls']} "
+            f"worker_calls={stats['worker_calls']} "
+            f"cache_hit_rate={hit_rate:.1%} "
+            f"materialize_calls={stats['materialize_calls']}"
+        )
+        print(
+            "      [tournament-profile] "
+            f"worker_time_s={stats['worker_time_s']:.2f} "
+            f"worker_run_time_s={stats['worker_run_time_s']:.2f} "
+            f"materialize_time_s={stats['materialize_time_s']:.2f} "
+            f"tree_time_s={stats['tree_time_s']:.2f} "
+            f"live_leaf_time_s={stats['live_leaf_time_s']:.2f}"
+        )
+        print(
+            "      [tournament-profile] "
+            f"avg_worker_ms={avg_worker_ms:.2f} "
+            f"avg_materialize_ms={avg_materialize_ms:.2f} "
+            f"cache_entries_written={stats['cache_store_entries']} "
+            f"cache_pruned_keys={stats['cache_pruned_keys']}"
+        )
     return {
-        "label": default_dispatch_label(path, metadata),
-        "path": str(path.resolve()),
-        "metadata": metadata,
+        "seed": seed,
+        "success": success,
+        "terminal_outcome": engine.last_terminal_outcome,
+        "training_objective_score": compute_training_objective_score(summary),
+        "research_metrics": compute_research_metric_bundle(summary),
+        "time_with_disasters": summary.time_with_disasters,
+        "wall_time_s": time.perf_counter() - t0,
+        "decisions": engine.decisions_made,
     }
 
 
-def run_ppo_episode(model: object, seed: int) -> tuple[bool, float, float, float, KPIBundle]:
-    episode: PPOEpisodeResult = run_ppo_policy_episode(model, seed, True, "ppo_benchmark")
-    return (
-        episode["success"],
-        episode["sim_time"],
-        episode["wall_time_s"],
-        episode["objective_score"],
-        episode["kpis"],
-    )
+def run_ppo_episode(model: object, seed: int, scenario_name: str, scenario_config: ScenarioConfig) -> EpisodeRecord:
+    from scripts.training.ppo.ppo_dispatch import run_policy_episode as run_ppo_policy_episode
+
+    episode: PPOEpisodeResult = run_ppo_policy_episode(model, seed, True, "ppo_benchmark", scenario_name, scenario_config)
+    return {
+        "seed": seed,
+        "success": bool(episode["success"]),
+        "terminal_outcome": episode["terminal_outcome"],
+        "training_objective_score": episode["objective_score"],
+        "research_metrics": episode["kpis"],
+        "time_with_disasters": episode["time_with_disasters"],
+        "wall_time_s": episode["wall_time_s"],
+        "decisions": episode["decisions"],
+    }
 
 
 def run_dispatch_episode(
@@ -511,7 +226,9 @@ def run_dispatch_episode(
     seed: int,
     scenario_config: ScenarioConfig,
     scenario_name: str,
-) -> tuple[bool, float, float, float, KPIBundle]:
+) -> EpisodeRecord:
+    from SimPyTest.gym import DisasterResponseGym
+
     t0 = time.perf_counter()
     dispatch_env = DisasterResponseGym(
         max_visible_disasters=model.max_visible_disasters,
@@ -530,431 +247,475 @@ def run_dispatch_episode(
         _ = reward
 
     summary = info["summary"]
-    return (
-        bool(info["is_success"]),
-        summary.non_idle_time,
-        time.perf_counter() - t0,
-        float(info["objective_score"]),
-        compute_kpi_bundle(summary),
-    )
+    return {
+        "seed": seed,
+        "success": bool(info["is_success"]),
+        "terminal_outcome": info["terminal_outcome"],
+        "training_objective_score": float(info["objective_score"]),
+        "research_metrics": compute_research_metric_bundle(summary),
+        "time_with_disasters": summary.time_with_disasters,
+        "wall_time_s": time.perf_counter() - t0,
+        "decisions": -1,
+    }
 
 
-def approach_column_width(names: list[str] | set[str]) -> int:
-    return max([len("APPROACH"), *(len(name) for name in names)], default=len("APPROACH"))
+def _mean(values: list[float]) -> float | None:
+    if not values:
+        return None
+    return statistics.mean(values)
+
+
+def _record_time_with_disasters(record: EpisodeRecord) -> float:
+    return float(record.get("time_with_disasters", record["time_with_disasters"]))
+
+
+def _is_qualified_approach(summary: dict[str, Any]) -> bool:
+    terminal_outcomes = summary["terminal_outcomes"]
+    return float(summary["success_rate"]) == 100.0 and set(terminal_outcomes.keys()) == {"SUCCESS"}
+
+
+def _approach_summary(records: list[EpisodeRecord]) -> dict[str, Any]:
+    success_records = [record for record in records if record["success"]]
+    terminal_counts = Counter((record["terminal_outcome"] or "UNKNOWN") for record in records)
+    research_metric_mean: dict[str, float | None] = {}
+    if records:
+        for key in sorted(records[0]["research_metrics"].keys()):
+            research_metric_mean[key] = _mean([record["research_metrics"][key] for record in records])
+    return {
+        "runs": len(records),
+        "successes": len(success_records),
+        "failures": len(records) - len(success_records),
+        "success_rate": (len(success_records) / len(records) * 100.0) if records else 0.0,
+        "avg_training_objective_score": _mean([record["training_objective_score"] for record in records]),
+        "avg_time_with_disasters": _mean([_record_time_with_disasters(record) for record in success_records]),
+        "avg_wall_time_s": _mean([record["wall_time_s"] for record in records]),
+        "terminal_outcomes": dict(sorted(terminal_counts.items())),
+        "qualified": False,
+        "research_metric_mean": research_metric_mean,
+        "per_seed": records,
+    }
+
+
+def summarize_results(results: dict[str, PolicyResult]) -> dict[str, dict[str, Any]]:
+    summaries = {name: _approach_summary(data["records"]) for name, data in results.items()}
+    for data in summaries.values():
+        data["qualified"] = _is_qualified_approach(data)
+    return summaries
+
+
+def paired_seed_comparison(reference_name: str, challenger_name: str, records_by_name: dict[str, list[EpisodeRecord]]) -> PairedComparison:
+    reference_records = {record["seed"]: record for record in records_by_name.get(reference_name, [])}
+    challenger_records = {record["seed"]: record for record in records_by_name.get(challenger_name, [])}
+    shared_seeds = sorted(set(reference_records) & set(challenger_records))
+
+    challenger_only_successes = 0
+    reference_only_successes = 0
+    terminal_outcomes: Counter[str] = Counter()
+    training_objective_deltas: list[float] = []
+    research_metric_deltas: defaultdict[str, list[float]] = defaultdict(list)
+
+    for seed in shared_seeds:
+        reference = reference_records[seed]
+        challenger = challenger_records[seed]
+        training_objective_deltas.append(challenger["training_objective_score"] - reference["training_objective_score"])
+
+        if challenger["success"] and not reference["success"]:
+            challenger_only_successes += 1
+        if reference["success"] and not challenger["success"]:
+            reference_only_successes += 1
+
+        terminal_key = f"{reference['terminal_outcome'] or 'UNKNOWN'}->{challenger['terminal_outcome'] or 'UNKNOWN'}"
+        terminal_outcomes[terminal_key] += 1
+        for key in sorted(reference["research_metrics"].keys()):
+            research_metric_deltas[key].append(challenger["research_metrics"][key] - reference["research_metrics"][key])
+
+    mean_research_metric_delta = {key: _mean(values) for key, values in sorted(research_metric_deltas.items())}
+    return {
+        "reference": reference_name,
+        "challenger": challenger_name,
+        "shared_seed_count": len(shared_seeds),
+        "challenger_only_successes": challenger_only_successes,
+        "reference_only_successes": reference_only_successes,
+        "terminal_outcomes": dict(sorted(terminal_outcomes.items())),
+        "mean_training_objective_delta": _mean(training_objective_deltas),
+        "mean_research_metric_delta": mean_research_metric_delta,
+    }
+
+
+def choose_reference_policy(summaries: dict[str, dict[str, Any]]) -> str | None:
+    qualified_names = [name for name, data in summaries.items() if data["qualified"]]
+    if not qualified_names:
+        return None
+    if DEFAULT_REFERENCE_POLICY in qualified_names:
+        return DEFAULT_REFERENCE_POLICY
+    return qualified_names[0]
 
 
 def run_benchmark_single(
     gis_enabled: bool,
     seed_values: list[int],
     preset: str,
-    policies: list[str] | None = None,
-    ex_policies: list[str] | None = None,
-    live_plot: bool = False,
-    ppo_model_path: str | None = None,
-    mlp_model_path: str | None = None,
-) -> defaultdict[str, PolicyResult]:
-    """
-    Run benchmark for a single configuration (GIS or no GIS).
-
-    Args:
-        gis_enabled: Whether to use GIS
-        seed_values: Explicit list of seeds to test
-        preset: preset level
-        ppo_model_path: Path to PPO model
-        live_plot: Show live plots
-        tournament_only: If True, run ONLY the tournament policy
-
-    Returns:
-        Dictionary of results
-    """
-    config_name = "GIS" if gis_enabled else "No GIS"
-
-    # Create scenario config
+    policies: list[str] | None,
+    ex_policies: list[str] | None,
+    live_plot: bool,
+    ppo_model_path: str | None,
+    mlp_model_path: str | None,
+    tournament_depths: list[int],
+    tournament_max_decisions: list[int] | list[None],
+) -> dict[str, PolicyResult]:
     if gis_enabled:
         gis_config = create_gis_config()
         if gis_config is None:
-            print(f"ERROR: Could not load GIS config. Skipping {config_name} tests.")
-            return defaultdict(
-                lambda: {
-                    "success": [],
-                    "success_wall": [],
-                    "objective": [],
-                    "kpis": [],
-                    "fail": 0,
-                }
-            )
+            raise RuntimeError("Could not load GIS config for GIS benchmark.")
     else:
         gis_config = None
 
     scenario_config = create_scenario_config(preset, gis_config)
-    print(
-        "Scenario config summary: "
-        "seasonal=True, "
-        f"weather_spawn={scenario_config.weather_model.enable_spawn_scaling}, "
-        f"weather_dispatch={scenario_config.weather_model.enable_dispatch_scaling}, "
-        f"dispatch_priors={scenario_config.operational_priors.use_dispatch_delay_priors}, "
-        f"time_variance={scenario_config.operational_priors.time_variance}, "
-        f"calendar_start={scenario_config.calendar_start_date}, "
-        f"spawn_interval_min={scenario_config.seasonal_spawn.interarrival_minutes_range}"
-    )
+    results: dict[str, PolicyResult] = defaultdict(_new_policy_result)
 
-    # Store results
-    aggregated_results: defaultdict[str, PolicyResult] = defaultdict(
-        lambda: {
-            "success": [],
-            "success_wall": [],
-            "objective": [],
-            "kpis": [],
-            "fail": 0,
-        }
-    )
-    run_policies = []
-    if policies is None:
-        run_policies = POLICIES + [TOURNAMENT_POLICY]
-    else:
-        run_policies = [p for p in POLICIES if p.name in policies]
-        if TOURNAMENT_POLICY.name in policies:
-            run_policies.append(TOURNAMENT_POLICY)
-
+    run_policies = [*POLICIES, TOURNAMENT_POLICY] if policies is None else [policy for policy in [*POLICIES, TOURNAMENT_POLICY] if policy.name in policies]
     if ex_policies is not None:
-        run_policies = [p for p in run_policies if p.name not in ex_policies]
+        run_policies = [policy for policy in run_policies if policy.name not in ex_policies]
 
-    run_names = [policy.name for policy in run_policies]
     ppo_spec = load_ppo_model_spec(ppo_model_path)
-    ppo_model = load_model(ppo_spec["path"], select_device()) if ppo_spec is not None else None
     dispatch_spec = load_dispatch_model_spec(mlp_model_path)
-    if dispatch_spec is not None:
+    if ppo_spec is not None or dispatch_spec is not None:
+        from scripts.training.ppo.ppo_dispatch import load_model, select_device
+
+        device = select_device()
+        ppo_model = load_model(ppo_spec["path"], device) if ppo_spec is not None else None
+    else:
+        device = None
+        ppo_model = None
+    if dispatch_spec is not None and device is not None:
         from scripts.training.mlp.ml_dispatch import TrainedDispatchPolicy
 
-        dispatch_model = TrainedDispatchPolicy.load(dispatch_spec["path"], device=select_device())
+        dispatch_model = TrainedDispatchPolicy.load(dispatch_spec["path"], device=device)
     else:
         dispatch_model = None
-    if ppo_spec is not None:
-        run_names.append(ppo_spec["label"])
-    if dispatch_spec is not None:
-        run_names.append(dispatch_spec["label"])
-    name_width = approach_column_width(run_names)
 
-    print(f"\n{'='*85}")
-    print(f"BENCHMARK: Testing with {config_name}")
-    print(f"Seeds: {seed_values}, preset: {preset}, policies: {policies}")
-    print(f"{'='*85}\n")
+    set_tournament_depth(tournament_depths[0])
+    set_tournament_max_decisions(tournament_max_decisions[0])
 
-    # Test policies on each seed
+    print(f"\nScenario: {preset} | GIS={'yes' if gis_enabled else 'no'} | Seeds={seed_values}")
     for seed in seed_values:
-        print(f"\n--- SEED {seed} ---")
-
+        print(f"  Seed {seed}")
         for policy in run_policies:
-            print(f"  {policy.name:<{name_width}} | ", end="", flush=True)
-            success, sim_duration, wall_duration, objective_score, kpi_bundle = run_policy_episode(policy, seed, scenario_config, live_plot)
+            if policy.name == TOURNAMENT_POLICY.name and len(tournament_depths) >= 1 and len(tournament_max_decisions) >= 1:
+                for depth in tournament_depths:
+                    for max_decisions in tournament_max_decisions:
+                        clear_tournament_cache()
+                        set_tournament_depth(depth)
+                        label = f"{TOURNAMENT_POLICY.name}_d{depth}_m{max_decisions}"
+                        record = run_policy_episode(TOURNAMENT_POLICY, seed, scenario_config, live_plot)
+                        results[label]["records"].append(record)
+                        terminal = record["terminal_outcome"] or "UNKNOWN"
+                        print(
+                            f"    {label:<18} terminal={terminal:<18} train_obj={record['training_objective_score']:.2f} time_with_disasters={record['time_with_disasters']:.2f} wall_time_s={record['wall_time_s']:.2f} decisions={record['decisions']:.2f}"
+                        )
+                set_tournament_depth(tournament_depths[0])
+                set_tournament_max_decisions(tournament_max_decisions[0])
+                continue
 
-            if success:
-                aggregated_results[policy.name]["success"].append(sim_duration)
-                aggregated_results[policy.name]["success_wall"].append(wall_duration)
-            else:
-                aggregated_results[policy.name]["fail"] += 1
-            aggregated_results[policy.name]["objective"].append(objective_score)
-            aggregated_results[policy.name]["kpis"].append(kpi_bundle)
-
-            print(
-                f"{'SUCCESS' if success else 'FAIL':<7} | "
-                f"Sim: {sim_duration:<10.2f} | "
-                f"Obj: {objective_score:<10.2f} | "
-                f"Cost: {kpi_bundle['total_spent']:<12.2f} | "
-                f"Wall: {wall_duration:<10.2f}s"
-            )
+            if policy.name != TOURNAMENT_POLICY.name:
+                record = run_policy_episode(policy, seed, scenario_config, live_plot)
+                results[policy.name]["records"].append(record)
+                terminal = record["terminal_outcome"] or "UNKNOWN"
+                print(
+                    f"    {policy.name:<18} terminal={terminal:<18} train_obj={record['training_objective_score']:.2f} time_with_disasters={record['time_with_disasters']:.2f} wall_time_s={record['wall_time_s']:.2f} decisions={record['decisions']:.2f}"
+                )
 
         if ppo_spec is not None and ppo_model is not None:
-            print(f"  {ppo_spec['label']:<{name_width}} | ", end="")
-            success, sim_duration, wall_duration, objective_score, kpi_bundle = run_ppo_episode(ppo_model, seed)
-
-            if success:
-                aggregated_results[ppo_spec["label"]]["success"].append(sim_duration)
-                aggregated_results[ppo_spec["label"]]["success_wall"].append(wall_duration)
-            else:
-                aggregated_results[ppo_spec["label"]]["fail"] += 1
-            aggregated_results[ppo_spec["label"]]["objective"].append(objective_score)
-            aggregated_results[ppo_spec["label"]]["kpis"].append(kpi_bundle)
-
+            record = run_ppo_episode(ppo_model, seed, preset, scenario_config)
+            results[ppo_spec["label"]]["records"].append(record)
+            terminal = record["terminal_outcome"] or "UNKNOWN"
             print(
-                f"{'SUCCESS' if success else 'FAIL':<7} | "
-                f"Sim: {sim_duration:<10.2f} | "
-                f"Obj: {objective_score:<10.2f} | "
-                f"Cost: {kpi_bundle['total_spent']:<12.2f} | "
-                f"Wall: {wall_duration:<10.2f}s"
+                f"    {ppo_spec['label']:<18} terminal={terminal:<18} train_obj={record['training_objective_score']:.2f} time_with_disasters={record['time_with_disasters']:.2f} wall_time_s={record['wall_time_s']:.2f} decisions={record['decisions']:.2f}"
             )
 
         if dispatch_spec is not None and dispatch_model is not None:
-            print(f"  {dispatch_spec['label']:<{name_width}} | ", end="")
-            success, sim_duration, wall_duration, objective_score, kpi_bundle = run_dispatch_episode(dispatch_model, seed, scenario_config, preset)
-
-            if success:
-                aggregated_results[dispatch_spec["label"]]["success"].append(sim_duration)
-                aggregated_results[dispatch_spec["label"]]["success_wall"].append(wall_duration)
-            else:
-                aggregated_results[dispatch_spec["label"]]["fail"] += 1
-            aggregated_results[dispatch_spec["label"]]["objective"].append(objective_score)
-            aggregated_results[dispatch_spec["label"]]["kpis"].append(kpi_bundle)
-
+            record = run_dispatch_episode(dispatch_model, seed, scenario_config, preset)
+            results[dispatch_spec["label"]]["records"].append(record)
+            terminal = record["terminal_outcome"] or "UNKNOWN"
             print(
-                f"{'SUCCESS' if success else 'FAIL':<7} | "
-                f"Sim: {sim_duration:<10.2f} | "
-                f"Obj: {objective_score:<10.2f} | "
-                f"Cost: {kpi_bundle['total_spent']:<12.2f} | "
-                f"Wall: {wall_duration:<10.2f}s"
+                f"    {dispatch_spec['label']:<18} terminal={terminal:<18} train_obj={record['training_objective_score']:.2f} time_with_disasters={record['time_with_disasters']:.2f} wall_time_s={record['wall_time_s']:.2f}"
             )
 
-    return aggregated_results
+    return dict(results)
 
 
-def print_results_table(results: defaultdict[str, PolicyResult], title: str = "RESULTS"):
-    """Print formatted results table."""
-    name_width = approach_column_width(list(results.keys()))
-    header = f"{'APPROACH':<{name_width}} | {'SUCCESS %':<10} | {'AVG OBJ':<8} | {'AVG SIM':<12} | " f"{'AVG COST':<12} | {'AVG WALL':<10} | {'SIM MIN':<8} | {'SIM MAX':<8}"
-    print(f"\n{title}")
-    print("=" * len(header))
-    print(header)
-    print("-" * len(header))
-
-    # Calculate statistics
-    final_stats: list[tuple[str, float, float | None, float, float | None, float, float, float]] = []
-    for name, data in results.items():
-        success_times = data["success"]
-        success_wall_times = data.get("success_wall", [])
-        objective_scores = data.get("objective", [])
-        kpi_records = data.get("kpis", [])
-        fail_count = data["fail"]
-        total_runs = len(success_times) + fail_count
-
-        success_rate = (len(success_times) / total_runs) * 100 if total_runs > 0 else 0
-
-        if success_times:
-            avg = statistics.mean(success_times)
-            avg_wall = statistics.mean(success_wall_times) if success_wall_times else float("inf")
-            mn = min(success_times)
-            mx = max(success_times)
-        else:
-            avg = float("inf")
-            avg_wall = float("inf")
-            mn = 0
-            mx = 0
-
-        avg_objective = statistics.mean(objective_scores) if objective_scores else None
-        avg_cost = statistics.mean(record["total_spent"] for record in kpi_records) if kpi_records else None
-        final_stats.append((name, success_rate, avg_objective, avg, avg_cost, avg_wall, mn, mx))
-
-    final_stats.sort(key=lambda x: (-x[1], -(x[2] if x[2] is not None else float("-inf")), x[3]))
-
-    for name, rate, avg_objective, avg, avg_cost, avg_wall, mn, mx in final_stats:
-        avg_objective_str = f"{avg_objective:.2f}" if avg_objective is not None else "N/A"
-        avg_str = f"{avg:.2f}" if avg != float("inf") else "N/A"
-        avg_cost_str = f"{avg_cost:.2f}" if avg_cost is not None else "N/A"
-        avg_wall_str = f"{avg_wall:.2f}s" if avg_wall != float("inf") else "N/A"
-        mn_str = f"{mn:.0f}" if avg != float("inf") else "N/A"
-        mx_str = f"{mx:.0f}" if avg != float("inf") else "N/A"
-
-        print(f"{name:<{name_width}} | {rate:<9.1f}% | {avg_objective_str:<8} | {avg_str:<12} | " f"{avg_cost_str:<12} | {avg_wall_str:<10} | {mn_str:<8} | {mx_str:<8}")
-
-    print("=" * len(header) + "\n")
+def build_scenario_report(scenario_name: str, gis_enabled: bool, results: dict[str, PolicyResult]) -> ScenarioReport:
+    summary = summarize_results(results)
+    reference_policy = choose_reference_policy(summary)
+    records_by_name = {name: data["per_seed"] for name, data in summary.items()}
+    paired = {
+        name: paired_seed_comparison(reference_policy, name, records_by_name) for name, data in summary.items() if reference_policy is not None and name != reference_policy and data["qualified"]
+    }
+    return {
+        "scenario": scenario_name,
+        "gis_enabled": gis_enabled,
+        "reference_policy": reference_policy,
+        "approaches": summary,
+        "paired_vs_reference": paired,
+    }
 
 
-def print_comparison_table(results_no_gis: defaultdict[str, PolicyResult], results_gis: defaultdict[str, PolicyResult]):
-    """Print side-by-side comparison of GIS vs No GIS."""
-    all_names = set(results_no_gis.keys()) | set(results_gis.keys())
-    name_width = approach_column_width(all_names)
-    header = f"{'APPROACH':<{name_width}} | {'NO GIS':<35} | {'GIS':<35} | {'DIFFERENCE':<25}"
-    subheader = f"{'':<{name_width}} | {'Success % | Avg Time':<35} | {'Success % | Avg Time':<35} | {'Success | Time':<25}"
-    print("\n" + "=" * len(header))
-    print("COMPARISON: GIS vs No GIS")
-    print("=" * len(header))
-    print(header)
-    print(subheader)
-    print("-" * len(header))
-
-    for name in sorted(all_names):
-        # No GIS stats
-        no_gis_data = results_no_gis.get(name, {"success": [], "success_wall": [], "objective": [], "kpis": [], "fail": 0})
-        no_gis_success = no_gis_data["success"]
-        no_gis_fail = no_gis_data["fail"]
-        no_gis_total = len(no_gis_success) + no_gis_fail
-        no_gis_rate = (len(no_gis_success) / no_gis_total * 100) if no_gis_total > 0 else 0
-        no_gis_avg = statistics.mean(no_gis_success) if no_gis_success else float("inf")
-        no_gis_str = f"{no_gis_rate:>6.1f}% | {no_gis_avg:>8.1f}" if no_gis_success else f"{no_gis_rate:>6.1f}% | {'N/A':>8}"
-
-        # GIS stats
-        gis_data = results_gis.get(name, {"success": [], "success_wall": [], "objective": [], "kpis": [], "fail": 0})
-        gis_success = gis_data["success"]
-        gis_fail = gis_data["fail"]
-        gis_total = len(gis_success) + gis_fail
-        gis_rate = (len(gis_success) / gis_total * 100) if gis_total > 0 else 0
-        gis_avg = statistics.mean(gis_success) if gis_success else float("inf")
-        gis_str = f"{gis_rate:>6.1f}% | {gis_avg:>8.1f}" if gis_success else f"{gis_rate:>6.1f}% | {'N/A':>8}"
-
-        # Differences
-        rate_diff = gis_rate - no_gis_rate
-        if no_gis_success and gis_success:
-            time_diff = gis_avg - no_gis_avg
-            time_diff_pct = (time_diff / no_gis_avg * 100) if no_gis_avg != 0 else 0
-            diff_str = f"{rate_diff:>+6.1f}% | {time_diff:>+7.1f} ({time_diff_pct:>+.1f}%)"
-        else:
-            diff_str = f"{rate_diff:>+6.1f}% | {'N/A':>15}"
-
-        print(f"{name:<{name_width}} | {no_gis_str:<35} | {gis_str:<35} | {diff_str:<25}")
-
-    print("=" * len(header) + "\n")
+def _suite_macro_summary(scenarios: list[ScenarioReport]) -> dict[str, dict[str, Any]]:
+    approach_names = sorted({name for scenario in scenarios for name in scenario["approaches"]})
+    macro: dict[str, dict[str, Any]] = {}
+    for name in approach_names:
+        success_rates: list[float] = []
+        training_objectives: list[float] = []
+        time_with_disasters_values: list[float] = []
+        qualified_scenarios = 0
+        scenario_count = 0
+        for scenario in scenarios:
+            data = scenario["approaches"].get(name)
+            if data is None:
+                continue
+            scenario_count += 1
+            success_rates.append(float(data["success_rate"]))
+            if data["avg_training_objective_score"] is not None:
+                training_objectives.append(float(data["avg_training_objective_score"]))
+            if data["avg_time_with_disasters"] is not None:
+                time_with_disasters_values.append(float(data["avg_time_with_disasters"]))
+            if data["qualified"]:
+                qualified_scenarios += 1
+        macro[name] = {
+            "scenario_count": scenario_count,
+            "qualified_scenarios": qualified_scenarios,
+            "macro_success_rate": _mean(success_rates),
+            "macro_avg_training_objective_score": _mean(training_objectives),
+            "macro_avg_time_with_disasters": _mean(time_with_disasters_values),
+        }
+    return macro
 
 
-def run_benchmark(
-    seeds: list[int],
-    preset: str = "clatsop_winter_ops",
-    compare_gis: bool = False,
-    policies: list[str] | None = None,
-    ex_policies: list[str] | None = None,
-    live_plot: bool = False,
-    ppo_model_path: str | None = None,
-    mlp_model_path: str | None = None,
-):
-    """
-    Run benchmark comparing all policies and PPO on shared seeds.
-
-    Args:
-        seeds: Number of different seeds to test
-        preset: Scenario profile name
-        ppo_model_path: Path to trained PPO model (if None, skips PPO testing)
-        live_plot: Whether to show live plots for policies
-        compare_gis: Whether to test both GIS and non-GIS configurations
-        tournament_only: If True, run ONLY the tournament policy (skip all other policies)
-    """
-
-    print(f"\n{'#'*85}")
-    print(f"#{'':83}#")
-    print(f"#{'BENCHMARK':^83}#")
-    print(f"#{'':83}#")
-    print(f"{'#'*85}\n")
-
-    # Always run without GIS
-    results_no_gis = run_benchmark_single(
-        gis_enabled=False,
-        seed_values=seeds,
-        preset=preset,
-        policies=policies,
-        ex_policies=ex_policies,
-        live_plot=live_plot,
-        ppo_model_path=ppo_model_path,
-        mlp_model_path=mlp_model_path,
+def print_scenario_table(report: ScenarioReport) -> None:
+    print(f"\nRESULTS: {report['scenario']} | GIS={'yes' if report['gis_enabled'] else 'no'}")
+    print("=" * 182)
+    print(
+        f"{'APPROACH':<24} | {'QUAL':<5} | {'SUCCESS %':<10} | {'AVG TIME W/ DISASTERS':<22} | "
+        f"{'AVG RESPONSE':<12} | {'AVG CLOSURE':<12} | {'AVG SPENT':<12} | {'TRAIN OBJ':<12} | {'AVG WALL':<10} | {'TERMINALS':<24}"
     )
+    print("-" * 182)
+    rows: list[tuple[str, dict[str, Any]]] = list(report["approaches"].items())
+    rows.sort(
+        key=lambda item: (
+            0 if item[1]["qualified"] else 1,
+            -(float(item[1]["success_rate"])),
+            float(item[1]["avg_time_with_disasters"]) if item[1]["avg_time_with_disasters"] is not None else float("inf"),
+            float(item[1]["research_metric_mean"]["avg_response_time_min"]) if item[1]["research_metric_mean"]["avg_response_time_min"] is not None else float("inf"),
+            float(item[1]["research_metric_mean"]["total_spent"]) if item[1]["research_metric_mean"]["total_spent"] is not None else float("inf"),
+        )
+    )
+    for name, data in rows:
+        avg_time_with_disasters = "N/A" if data["avg_time_with_disasters"] is None else f"{data['avg_time_with_disasters']:.2f}"
+        avg_response = "N/A" if data["research_metric_mean"]["avg_response_time_min"] is None else f"{data['research_metric_mean']['avg_response_time_min']:.2f}"
+        avg_closure = "N/A" if data["research_metric_mean"]["total_weighted_closure_hours"] is None else f"{data['research_metric_mean']['total_weighted_closure_hours']:.2f}"
+        avg_spent = "N/A" if data["research_metric_mean"]["total_spent"] is None else f"{data['research_metric_mean']['total_spent']:.2f}"
+        train_obj = "N/A" if data["avg_training_objective_score"] is None else f"{data['avg_training_objective_score']:.2f}"
+        avg_wall = "N/A" if data["avg_wall_time_s"] is None else f"{data['avg_wall_time_s']:.2f}s"
+        terminals = ", ".join(f"{key}:{value}" for key, value in data["terminal_outcomes"].items())
+        qualified = "yes" if data["qualified"] else "no"
+        print(
+            f"{name:<24} | {qualified:<5} | {data['success_rate']:<9.1f}% | {avg_time_with_disasters:<22} | "
+            f"{avg_response:<12} | {avg_closure:<12} | {avg_spent:<12} | {train_obj:<12} | {avg_wall:<10} | {terminals:<24}"
+        )
 
-    print_results_table(results_no_gis, "RESULTS: NO GIS")
 
-    # Optionally run with GIS
-    results_gis = None
-    if compare_gis:
-        results_gis = run_benchmark_single(
-            gis_enabled=True,
+def print_paired_comparisons(report: ScenarioReport) -> None:
+    if report["reference_policy"] is None:
+        print("\nPaired benchmark comparison skipped: no approach achieved 100% SUCCESS terminal outcomes on this panel.")
+        return
+    if not report["paired_vs_reference"]:
+        return
+    print(f"\nPaired vs reference: {report['reference_policy']}")
+    print("-" * 126)
+    print(f"{'APPROACH':<24} | {'C-ONLY':<6} | {'R-ONLY':<6} | {'DELTA TIME':<12} | {'DELTA RESP':<12} | {'DELTA SPENT':<12} | {'DELTA CLOSE':<12}")
+    print("-" * 126)
+    for name, comparison in sorted(report["paired_vs_reference"].items()):
+        metric_delta = comparison["mean_research_metric_delta"]
+        delta_time = "N/A" if metric_delta["time_with_disasters"] is None else f"{metric_delta['time_with_disasters']:.2f}"
+        delta_resp = "N/A" if metric_delta["avg_response_time_min"] is None else f"{metric_delta['avg_response_time_min']:.2f}"
+        delta_spent = "N/A" if metric_delta["total_spent"] is None else f"{metric_delta['total_spent']:.2f}"
+        delta_close = "N/A" if metric_delta["total_weighted_closure_hours"] is None else f"{metric_delta['total_weighted_closure_hours']:.2f}"
+        print(
+            f"{name:<24} | {comparison['challenger_only_successes']:<6} | " f"{comparison['reference_only_successes']:<6} | {delta_time:<12} | {delta_resp:<12} | {delta_spent:<12} | {delta_close:<12}"
+        )
+
+
+def print_suite_summary(report: SuiteReport) -> None:
+    print(f"\nSUITE SUMMARY: {report['suite_name']}")
+    print("=" * 114)
+    print(f"{'APPROACH':<24} | {'SCENARIOS':<9} | {'QUALIFIED':<9} | {'MACRO SUCCESS %':<16} | {'MACRO TRAIN OBJ':<16} | {'MACRO TIME W/ DISASTERS':<24}")
+    print("-" * 114)
+    for name, data in sorted(report["macro_summary"].items()):
+        success = "N/A" if data["macro_success_rate"] is None else f"{data['macro_success_rate']:.1f}%"
+        objective = "N/A" if data["macro_avg_training_objective_score"] is None else f"{data['macro_avg_training_objective_score']:.2f}"
+        time_with_disasters = "N/A" if data["macro_avg_time_with_disasters"] is None else f"{data['macro_avg_time_with_disasters']:.2f}"
+        print(f"{name:<24} | {data['scenario_count']:<9} | {data['qualified_scenarios']:<9} | {success:<16} | {objective:<14} | {time_with_disasters:<24}")
+
+
+def run_suite(
+    suite_name: str,
+    policies: list[str] | None,
+    ex_policies: list[str] | None,
+    live_plot: bool,
+    ppo_model_path: str | None,
+    mlp_model_path: str | None,
+    tournament_depths: list[int],
+    tournament_max_decisions: list[int] | list[None],
+) -> SuiteReport:
+    suite = BENCHMARK_SUITES[suite_name]
+    seeds = list(suite.seeds)
+    scenario_reports: list[ScenarioReport] = []
+
+    for scenario_name in suite.scenario_names:
+        results = run_benchmark_single(
+            gis_enabled=suite.gis_enabled,
             seed_values=seeds,
-            preset=preset,
+            preset=scenario_name,
             policies=policies,
             ex_policies=ex_policies,
             live_plot=live_plot,
             ppo_model_path=ppo_model_path,
             mlp_model_path=mlp_model_path,
+            tournament_depths=tournament_depths,
+            tournament_max_decisions=tournament_max_decisions,
         )
+        report = build_scenario_report(scenario_name, suite.gis_enabled, results)
+        print_scenario_table(report)
+        print_paired_comparisons(report)
+        scenario_reports.append(report)
 
-        print_results_table(results_gis, "RESULTS: GIS")
-
-        # Print comparison
-        print_comparison_table(results_no_gis, results_gis)
-
-    return results_no_gis, results_gis
+    return {
+        "suite_name": suite_name,
+        "seeds": seeds,
+        "gis_enabled": suite.gis_enabled,
+        "reference_policy": choose_reference_policy({name: data for scenario in scenario_reports for name, data in scenario["approaches"].items()}),
+        "scenarios": scenario_reports,
+        "macro_summary": _suite_macro_summary(scenario_reports),
+    }
 
 
 def write_results_json(path: str, payload: dict[str, Any]) -> None:
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(payload, f, indent=2, sort_keys=True)
+    with open(path, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle, indent=2, sort_keys=True)
     print(f"Wrote benchmark results to {path}")
 
 
 def build_parser() -> ArgumentParser:
-    parser = ArgumentParser(description="Benchmark policies and PPO on shared seeds")
+    parser = ArgumentParser(description="Benchmark policies on shared seeds")
     parser.add_argument("--seeds", type=str, default="5", help="Either a seed count (e.g. 5) or comma-separated seeds (e.g. 1,3,5)")
-    parser.add_argument(
-        "--preset",
-        type=str,
-        default="clatsop_winter_ops",
-        choices=[
-            "clatsop_winter_ops",
-            "clatsop_summer_ops",
-            "clatsop_storm_stress",
-            "clatsop_landslide_curriculum",
-            "clatsop_landslide_curriculum_stage2",
-            "clatsop_landslide_ops",
-            "single_landslide_micro",
-        ],
-        help="Scenario profile: clatsop_winter_ops, clatsop_summer_ops, clatsop_storm_stress, clatsop_landslide_curriculum, clatsop_landslide_curriculum_stage2, clatsop_landslide_ops, or single_landslide_micro",
-    )
-    parser.add_argument("--compare-gis", action="store_true", help="Test both GIS and non-GIS configurations for comparison")
+    parser.add_argument("--preset", type=str, default="medium-winter", choices=sorted(SCENARIO_SPECS.keys()), help="Single scenario preset to benchmark")
+    parser.add_argument("--compare-gis", action="store_true", help="Single-scenario mode only: run both GIS and non-GIS versions")
     parser.add_argument("--policies", type=str, default=None, help="Comma-separated list of policies to test")
     parser.add_argument("--ex-policies", type=str, default=None, help="Comma-separated list of policies to exclude from testing")
-    parser.add_argument("--tournament-depth", type=int, default=1, help="Tree search depth for tournament policy (1=run to completion, 2+=look ahead N decisions)")
-    parser.add_argument(
-        "--suite",
-        type=str,
-        default=None,
-        choices=list(STANDARD_BENCHMARK_SUITES.keys()),
-        help="Run a standardized benchmark suite (overrides --preset/--compare-gis single-run mode)",
-    )
+    parser.add_argument("--tournament-depth", type=str, default="1", help="Single depth or comma-separated list of tournament depths")
+    parser.add_argument("--tournament-max-decisions", type=str, default="None", help="Single max decisions or comma-separated list of tournament max decisions")
+    parser.add_argument("--suite", type=str, default=None, choices=sorted(BENCHMARK_SUITES.keys()), help="Run a named benchmark suite")
     parser.add_argument("--output-json", type=str, default=None, help="Optional path to write machine-readable benchmark results")
     parser.add_argument("--live-plot", action="store_true", help="Show live plots")
-    parser.add_argument("--ppo-model-path", type=str, default=None, help="Optional PPO checkpoint to include in benchmark output")
-    parser.add_argument("--mlp-model-path", type=str, default=None, help="Optional MLP dispatch checkpoint to include in benchmark output")
-
+    parser.add_argument("--ppo-model-path", type=str, default=None, help="Optional PPO checkpoint to include")
+    parser.add_argument("--mlp-model-path", type=str, default=None, help="Optional MLP dispatch checkpoint to include")
     return parser
 
 
+def _parse_seed_values(raw_seeds: str) -> list[int]:
+    seed_text = raw_seeds.strip()
+    if "," in seed_text:
+        return [int(seed.strip()) for seed in seed_text.split(",") if seed.strip()]
+    if seed_text.startswith("-"):
+        return [int(seed_text)]
+    return list(range(int(seed_text)))
+
+
+def _parse_depth_values(raw_depth: str) -> list[int] | None:
+    if raw_depth == "None":
+        return None
+    depth_text = raw_depth.strip()
+    if "," in depth_text:
+        return [int(depth.strip()) for depth in depth_text.split(",") if depth.strip()]
+    return [int(depth_text)]
+
+
+def _single_mode_payload(
+    preset: str,
+    seeds: list[int],
+    compare_gis: bool,
+    policies: list[str] | None,
+    ex_policies: list[str] | None,
+    live_plot: bool,
+    ppo_model_path: str | None,
+    mlp_model_path: str | None,
+    tournament_depths: list[int],
+    tournament_max_decisions: list[int] | list[None],
+) -> dict[str, Any]:
+    no_gis_results = run_benchmark_single(False, seeds, preset, policies, ex_policies, live_plot, ppo_model_path, mlp_model_path, tournament_depths, tournament_max_decisions)
+    no_gis_report = build_scenario_report(preset, False, no_gis_results)
+    print_scenario_table(no_gis_report)
+    print_paired_comparisons(no_gis_report)
+
+    gis_report = None
+    if compare_gis:
+        gis_results = run_benchmark_single(True, seeds, preset, policies, ex_policies, live_plot, ppo_model_path, mlp_model_path, tournament_depths, tournament_max_decisions)
+        gis_report = build_scenario_report(preset, True, gis_results)
+        print_scenario_table(gis_report)
+        print_paired_comparisons(gis_report)
+
+    return {
+        "mode": "single",
+        "preset": preset,
+        "seeds": seeds,
+        "compare_gis": compare_gis,
+        "scenario_catalog_version": SCENARIO_CATALOG_VERSION,
+        "objective_version": OBJECTIVE_VERSION,
+        "results_no_gis": no_gis_report,
+        "results_gis": gis_report,
+    }
+
+
 if __name__ == "__main__":
-    parser = build_parser()
-    args = parser.parse_args()
-
-    raw_seeds = str(args.seeds).strip()
-    if "," in raw_seeds:
-        seeds = [int(seed.strip()) for seed in raw_seeds.split(",") if seed.strip()]
-    else:
-        seeds = list(range(int(raw_seeds)))
-
-    if args.tournament_depth > 1:
-        print(f"Using tree search with depth {args.tournament_depth}")
-    set_tournament_depth(args.tournament_depth)
+    args = build_parser().parse_args()
+    seeds = _parse_seed_values(str(args.seeds))
+    tournament_depths = _parse_depth_values(str(args.tournament_depth)) or [1]
+    tournament_max_decisions: list[int] | list[None] = _parse_depth_values(str(args.tournament_max_decisions)) or [None]
+    policies = args.policies.split(",") if args.policies else None
+    ex_policies = args.ex_policies.split(",") if args.ex_policies else None
 
     if args.suite is not None:
-        suite = STANDARD_BENCHMARK_SUITES[args.suite]
-        args.preset = suite["preset"]
-        args.compare_gis = bool(suite.get("compare_gis", False))
-
-    results_no_gis, results_gis = run_benchmark(
-        seeds=seeds,
-        preset=args.preset,
-        compare_gis=args.compare_gis,
-        policies=args.policies.split(",") if args.policies else None,
-        ex_policies=args.ex_policies.split(",") if args.ex_policies else None,
-        live_plot=args.live_plot,
-        ppo_model_path=args.ppo_model_path,
-        mlp_model_path=args.mlp_model_path,
-    )
-    if args.output_json:
-        write_results_json(
-            args.output_json,
-            {
-                "benchmark_version": "v1",
-                "evaluation_protocol_version": EVALUATION_PROTOCOL_VERSION,
-                "generated_at_utc": datetime.now(timezone.utc).isoformat(),
-                "mode": "single",
-                "preset": args.preset,
-                "seeds": seeds,
-                "compare_gis": args.compare_gis,
-                "policies": args.policies,
-                "ppo_model_path": args.ppo_model_path,
-                "mlp_model_path": args.mlp_model_path,
-                "results_no_gis": summarize_results(results_no_gis),
-                "results_gis": summarize_results(results_gis) if results_gis is not None else None,
-            },
+        suite_report = run_suite(
+            suite_name=args.suite,
+            policies=policies,
+            ex_policies=ex_policies,
+            live_plot=args.live_plot,
+            ppo_model_path=args.ppo_model_path,
+            mlp_model_path=args.mlp_model_path,
+            tournament_depths=tournament_depths,
+            tournament_max_decisions=tournament_max_decisions,
         )
+        print_suite_summary(suite_report)
+        payload = {
+            "mode": "suite",
+            "suite": args.suite,
+            "scenario_catalog_version": SCENARIO_CATALOG_VERSION,
+            "objective_version": OBJECTIVE_VERSION,
+            "suite_report": suite_report,
+        }
+    else:
+        payload = _single_mode_payload(
+            preset=args.preset,
+            seeds=seeds,
+            compare_gis=bool(args.compare_gis),
+            policies=policies,
+            ex_policies=ex_policies,
+            live_plot=bool(args.live_plot),
+            ppo_model_path=args.ppo_model_path,
+            mlp_model_path=args.mlp_model_path,
+            tournament_depths=tournament_depths,
+            tournament_max_decisions=tournament_max_decisions,
+        )
+
+    if args.output_json:
+        write_results_json(args.output_json, payload)

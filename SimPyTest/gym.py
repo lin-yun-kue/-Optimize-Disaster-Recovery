@@ -218,7 +218,7 @@ class DisasterResponseGym(gym.Env[ObsType, ActType]):
         if self.sorting_strategy == "random":
             ordered = list(candidates)
             self.engine.rng.shuffle(ordered)
-            return sorted(ordered, key=lambda d: d.id)
+            return ordered
         if self.sorting_strategy == "most_progress":
             return sorted(candidates, key=lambda d: (-(1.0 - d.percent_remaining()), d.created_time, d.id))
         return sorted(candidates, key=lambda d: (d.percent_remaining(), d.created_time, d.id))

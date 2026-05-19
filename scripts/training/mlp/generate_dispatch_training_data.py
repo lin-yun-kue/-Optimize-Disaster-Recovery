@@ -44,7 +44,8 @@ def collect_demonstration_dataset(
         raise ValueError("At least one teacher policy is required")
 
     teacher_policies = [policy for policy in BENCHMARK_POLICIES if policy.name in teacher_names]
-    seed_values = list(range(train_seeds))
+    # seed_values = list(range(train_seeds))
+    seed_values = [train_seeds]
 
     batches: list[DemonstrationBatch] = []
     for difficulty in difficulties:
@@ -94,7 +95,7 @@ if __name__ == "__main__":
     name = time.strftime("%Y%m%d_%H%M%S")
     if args.name:
         name = args.name + "_" + name
-    output_dir = Path(args.output_dir) / name
+    output_dir = Path(args.output_dir) / str(args.train_seeds)
     output_dir.mkdir(parents=True, exist_ok=True)
 
     dataset_path = output_dir / "demonstrations.npz"

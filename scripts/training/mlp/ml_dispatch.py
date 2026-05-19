@@ -85,7 +85,42 @@ class DemonstrationBatch:
 
     @classmethod
     def load(cls, path: str | Path) -> "DemonstrationBatch":
-        with np.load(Path(path), allow_pickle=False) as data:
+        with np.load(Path(path), allow_pickle=True) as data:
+            # `metadata_json` may be stored as a numpy array of strings (possibly
+            # with more than one element). Normalize to a single JSON string
+            # before parsing.
+            meta_field = data["metadata_json"]
+            metadata = None
+            # If metadata is stored as a numpy array, attempt to parse each
+            # element as JSON. Fallback to joining elements if necessary and
+            # raise a descriptive error if parsing still fails.
+            if isinstance(meta_field, np.ndarray):
+                if meta_field.size == 1:
+                    meta_str = str(meta_field.item())
+                    try:
+                        metadata = json.loads(meta_str)
+                    except json.JSONDecodeError:
+                        pass
+                else:
+                    for elem in meta_field.flat:
+                        try:
+                            metadata = json.loads(str(elem))
+                            break
+                        except Exception:
+                            continue
+                    if metadata is None:
+                        joined = "".join(str(x) for x in meta_field.tolist())
+                        try:
+                            metadata = json.loads(joined)
+                        except Exception as exc:
+                            raise ValueError(
+                                f"Unable to parse metadata_json from array with shape {meta_field.shape}; sample={repr(meta_field.tolist()[:5])}"
+                            ) from exc
+            else:
+                try:
+                    metadata = json.loads(str(meta_field))
+                except Exception as exc:
+                    raise ValueError("Unable to parse metadata_json field") from exc
             return cls(
                 current_resource=np.asarray(data["current_resource"], dtype=np.float32),
                 global_state=np.asarray(data["global_state"], dtype=np.float32),
@@ -93,7 +128,7 @@ class DemonstrationBatch:
                 observations=np.asarray(data["observations"], dtype=np.float32),
                 actions=np.asarray(data["actions"], dtype=np.int64),
                 action_masks=np.asarray(data["action_masks"], dtype=np.float32),
-                metadata=json.loads(str(data["metadata_json"].item())),
+                metadata=metadata,
             )
 
 
@@ -399,6 +434,9 @@ def collect_policy_demonstrations(
 
                 obs, reward, terminated, truncated, info = env.step(action)
                 steps += 1
+
+                if info["is_success"] or info["is_failure"] or info["is_truncated"]:
+                    print(f"Terminal outcome for teacher={teacher_policy.name} seed={seed} steps={steps}: objective_score={info['objective_score']} (success={info['is_success']})")
 
                 if teacher_policy.name == "tournament":
                     clear_tournament_cache()

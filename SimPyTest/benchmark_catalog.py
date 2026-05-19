@@ -182,62 +182,6 @@ def _make_benchmark_specs() -> dict[str, BenchmarkScenarioSpec]:
                 factory=lambda gis_config, yrs=years, idx=season_idx: _add_gis_config(yrs[idx], gis_config),
             )
 
-    specs["clatsop_landslide_curriculum"] = BenchmarkScenarioSpec(
-        factory=lambda gis_config: _add_gis_config(
-            _single_disaster_curriculum_config(
-                trucks=6,
-                excavators=3,
-                landslide_count=(1, 1),
-                landslide_size=(200, 900),
-                time_variance=0.0,
-            ),
-            gis_config,
-        ),
-    )
-    specs["clatsop_landslide_curriculum_stage2"] = BenchmarkScenarioSpec(
-        factory=lambda gis_config: _add_gis_config(
-            _single_disaster_curriculum_config(
-                trucks=10,
-                excavators=5,
-                landslide_count=(2, 2),
-                landslide_size=(250, 1200),
-                time_variance=0.0,
-            ),
-            gis_config,
-        ),
-    )
-    specs["clatsop_landslide_ops"] = BenchmarkScenarioSpec(
-        factory=lambda gis_config: _add_gis_config(
-            _single_disaster_curriculum_config(
-                trucks=12,
-                excavators=6,
-                landslide_count=(3, 4),
-                landslide_size=(300, 1800),
-                time_variance=0.1,
-                calendar_duration_years=0.4,
-            ),
-            gis_config,
-        ),
-    )
-    specs["single_landslide_micro"] = BenchmarkScenarioSpec(
-        factory=lambda gis_config: _add_gis_config(
-            _single_disaster_curriculum_config(
-                trucks=4,
-                excavators=2,
-                landslide_count=(1, 1),
-                landslide_size=(100, 250),
-                time_variance=0.0,
-                calendar_duration_years=0.1,
-            ),
-            gis_config,
-        ),
-    )
-
-    # Active documentation and training still refer to these Clatsop names.
-    specs["clatsop_winter_ops"] = specs["medium-winter"]
-    specs["clatsop_summer_ops"] = specs["medium-summer"]
-    specs["clatsop_storm_stress"] = specs["hard-fall"]
-
     return specs
 
 

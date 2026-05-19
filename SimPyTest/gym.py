@@ -5,7 +5,7 @@ from typing import Any, Literal, TypedDict, cast
 import gymnasium as gym
 import numpy as np
 import numpy.typing as npt
-
+import random
 from gymnasium import spaces
 from simpy.core import EmptySchedule
 from typing_extensions import override
@@ -217,7 +217,7 @@ class DisasterResponseGym(gym.Env[ObsType, ActType]):
             return sorted(candidates, key=lambda d: (-self._resource_sort_distance(resource, d), d.created_time, d.id))
         if self.sorting_strategy == "random":
             ordered = list(candidates)
-            self.engine.rng.shuffle(ordered)
+            random.shuffle(ordered)
             return ordered
         if self.sorting_strategy == "most_progress":
             return sorted(candidates, key=lambda d: (-(1.0 - d.percent_remaining()), d.created_time, d.id))

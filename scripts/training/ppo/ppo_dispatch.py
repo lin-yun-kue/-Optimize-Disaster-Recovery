@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from collections import defaultdict
 from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -24,8 +23,8 @@ from SimPyTest.simulation import Disaster
 import random
 
 PPO_CHECKPOINT_VERSION = "v2"
-TRAINING_SEEDS = list(range(64))
-VALIDATION_SEEDS = list(range(-10, 0))
+TRAINING_SEEDS = list(range(128))
+VALIDATION_SEEDS = list(range(-20, -10))
 SCENARIO_NAME = "landslide_winter_curriculum"
 MAX_VISIBLE_DISASTERS = 5
 SORTING_STRATEGY = "random"
@@ -49,12 +48,37 @@ class EpisodeResult(TypedDict):
     decisions: int
 
 
+class EvaluationMetrics(TypedDict):
+    episodes: list[EpisodeResult]
+    success_rate: float
+    avg_objective_score: float
+    avg_total_reward: float
+    avg_sim_time: float
+    avg_time_with_disasters: float
+    avg_wall_time_s: float
+    avg_invalid_action_count: float
+    avg_invalid_action_remaps: float
+    avg_valid_action_ratio: float
+    successes: int
+    runs: int
+
+
 @dataclass(frozen=True)
 class CurriculumStage:
     name: str
     benchmark_preset: str
     timesteps: int
     scenario_config: ScenarioConfig
+
+
+@dataclass(frozen=True)
+class ValidationTarget:
+    log_name: str
+    scenario_name: str
+    benchmark_preset: str
+    scenario_config: ScenarioConfig
+    deterministic: bool
+    save_best: bool = False
 
 
 @dataclass(frozen=True)
@@ -318,7 +342,7 @@ def evaluate_model(
     controller_name: str,
     scenario_name: str,
     scenario_config: ScenarioConfig,
-) -> dict[str, Any]:
+) -> EvaluationMetrics:
     episodes: list[EpisodeResult] = []
     for seed in seeds:
         episode = run_policy_episode(model, seed, deterministic, controller_name, scenario_name, scenario_config)
@@ -363,56 +387,108 @@ class ValidationCallback(BaseCallback):
         super().__init__()
         self.config = config
         self.run_dir = run_dir
-        self.best_success_rate: defaultdict[str, float] = defaultdict(lambda: float("-inf"))
-        self.best_objective = float("-inf")
+        self.best_target_success_rate = float("-inf")
+        self.best_target_objective = float("-inf")
         self.validation_history: list[dict[str, Any]] = []
         self.stage = config.curriculum_stages[0]
 
     def set_stage(self, stage: CurriculumStage) -> None:
         self.stage = stage
 
-    def run_validation(self):
+    def _get_stage_index(self) -> int:
+        for i, s in enumerate(self.config.curriculum_stages):
+            if s.name == self.stage.name:
+                return i
+        return 0
+
+    def _build_validation_targets(self) -> list[ValidationTarget]:
         from benchmark import create_scenario_config
 
-        print("Validation starting | " f"steps={self.num_timesteps} | " f"seeds={self.config.validation_seeds[0]}..{self.config.validation_seeds[-1]} | " f"runs={len(self.config.validation_seeds)}")
-
-        active_scenarios = [
-            CurriculumStage(
-                name="easy_benchmark",
+        return [
+            ValidationTarget(
+                log_name="easy_benchmark",
+                scenario_name="easy_benchmark",
                 benchmark_preset="easy-winter",
-                timesteps=0,
                 scenario_config=create_scenario_config("easy-winter", None),
+                deterministic=True,
             ),
-            CurriculumStage(
-                name="medium_benchmark",
+            ValidationTarget(
+                log_name="medium_benchmark",
+                scenario_name="medium_benchmark",
                 benchmark_preset="medium-winter",
-                timesteps=0,
                 scenario_config=create_scenario_config("medium-winter", None),
+                deterministic=True,
             ),
-            self.stage,
+            ValidationTarget(
+                log_name="curriculum_det",
+                scenario_name=self.stage.name,
+                benchmark_preset=self.stage.benchmark_preset,
+                scenario_config=self.stage.scenario_config,
+                deterministic=True,
+                save_best=True,
+            ),
+            ValidationTarget(
+                log_name="curriculum_stoch",
+                scenario_name=self.stage.name,
+                benchmark_preset=self.stage.benchmark_preset,
+                scenario_config=self.stage.scenario_config,
+                deterministic=False,
+            ),
         ]
 
-        for stage in active_scenarios:
-            # Run evaluation
-            metrics = evaluate_model(self.model, self.config.validation_seeds, True, "ppo_validation", stage.name, stage.scenario_config)
-            metrics["timesteps"] = self.num_timesteps
-            metrics["stage_name"] = self.stage.name
-            metrics["benchmark_preset"] = self.stage.benchmark_preset
-            self.validation_history.append(metrics)
+    def _save_if_best(self, metrics: EvaluationMetrics) -> None:
+        success_rate = float(metrics["success_rate"])
+        objective_score = float(metrics["avg_objective_score"])
+        if success_rate > self.best_target_success_rate or (success_rate == self.best_target_success_rate and objective_score > self.best_target_objective):
+            self.best_target_success_rate = success_rate
+            self.best_target_objective = objective_score
+            self.model.save(self.run_dir / "best_model.zip")
 
-            self.logger.record(f"validation/{self.stage.name}-success_rate", float(metrics["success_rate"]))
-            self.logger.record(f"validation/{self.stage.name}-avg_obj_score", float(metrics["avg_objective_score"]))
-            self.logger.record(f"validation/{self.stage.name}-avg_tot_rew", float(metrics["avg_total_reward"]))
-            self.logger.record(f"validation/{self.stage.name}-avg_time_w_dis", float(metrics["avg_time_with_disasters"]))
-            self.logger.record(f"validation/{self.stage.name}-avg_inv_act_count", float(metrics["avg_invalid_action_count"]))
-            self.logger.record(f"validation/{self.stage.name}-avg_inv_act_remaps", float(metrics["avg_invalid_action_remaps"]))
-            self.logger.record(f"validation/{self.stage.name}-avg_val_act_ratio", float(metrics["avg_valid_action_ratio"]))
+    def run_validation(self) -> None:
+        print("Validation starting | " f"steps={self.num_timesteps} | " f"seeds={self.config.validation_seeds[0]}..{self.config.validation_seeds[-1]} | " f"runs={len(self.config.validation_seeds)}")
+
+        stage_index = self._get_stage_index()
+        self.logger.record("validation/curriculum_stage_index", stage_index)
+        self.logger.record("validation/current_stage_timesteps", self.stage.timesteps)
+
+        for target in self._build_validation_targets():
+            metrics = evaluate_model(
+                self.model,
+                self.config.validation_seeds,
+                target.deterministic,
+                "ppo_validation",
+                target.scenario_name,
+                target.scenario_config,
+            )
+            row = {
+                **metrics,
+                "timesteps": self.num_timesteps,
+                "active_stage_name": self.stage.name,
+                "active_stage_benchmark_preset": self.stage.benchmark_preset,
+                "active_stage_index": stage_index,
+                "evaluation_log_name": target.log_name,
+                "evaluated_scenario_name": target.scenario_name,
+                "evaluated_benchmark_preset": target.benchmark_preset,
+                "deterministic": target.deterministic,
+                "save_best_target": target.save_best,
+            }
+            self.validation_history.append(row)
+
+            self.logger.record(f"validation/{target.log_name}-success_rate", float(metrics["success_rate"]))
+            self.logger.record(f"validation/{target.log_name}-avg_obj_score", float(metrics["avg_objective_score"]))
+            self.logger.record(f"validation/{target.log_name}-avg_tot_rew", float(metrics["avg_total_reward"]))
+            self.logger.record(f"validation/{target.log_name}-avg_time_w_dis", float(metrics["avg_time_with_disasters"]))
+            self.logger.record(f"validation/{target.log_name}-avg_inv_act_count", float(metrics["avg_invalid_action_count"]))
+            self.logger.record(f"validation/{target.log_name}-avg_inv_act_remaps", float(metrics["avg_invalid_action_remaps"]))
+            self.logger.record(f"validation/{target.log_name}-avg_val_act_ratio", float(metrics["avg_valid_action_ratio"]))
             self.logger.dump(self.num_timesteps)
 
             print(
                 "Validation | "
-                f"stage={self.stage.name} | "
-                f"preset={self.stage.benchmark_preset} | "
+                f"active_stage={self.stage.name} | "
+                f"eval={target.log_name} | "
+                f"preset={target.benchmark_preset} | "
+                f"deterministic={target.deterministic} | "
                 f"steps={self.num_timesteps} | "
                 f"train_obj={metrics['avg_objective_score']:.2f} | "
                 f"success={metrics['success_rate'] * 100:.1f}% | "
@@ -423,12 +499,8 @@ class ValidationCallback(BaseCallback):
                 f"valid_ratio={metrics['avg_valid_action_ratio']:.3f}"
             )
 
-            success_rate = float(metrics["success_rate"])
-            training_objective_score = float(metrics["avg_objective_score"])
-            if success_rate > self.best_success_rate[self.stage.name] or (success_rate == self.best_success_rate[self.stage.name] and training_objective_score > self.best_objective):
-                self.best_success_rate[self.stage.name] = success_rate
-                self.best_objective = training_objective_score
-                self.model.save(self.run_dir / "best_model.zip")
+            if target.save_best:
+                self._save_if_best(metrics)
 
         write_json(self.run_dir / "validation_metrics.json", {"history": self.validation_history})
 
@@ -452,6 +524,11 @@ class ActionDebugCallback(BaseCallback):
 
     def set_stage(self, stage: CurriculumStage) -> None:
         self.stage_name = stage.name
+        self.action_counts = {}
+        self.invalid_count = 0
+        self.remap_events = 0
+        self.valid_action_total = 0
+        self.samples = 0
 
     @override
     def _on_step(self) -> bool:
@@ -531,7 +608,7 @@ def serialize_stage(stage: CurriculumStage) -> dict[str, Any]:
     wildfire = stage.scenario_config.seasonal_spawn["wildfire_debris"]
     return {
         "name": stage.name,
-        "scenario_name": stage.scenario_name,
+        "scenario_name": stage.name,
         "benchmark_preset": stage.benchmark_preset,
         "timesteps": stage.timesteps,
         "resource_counts": {
@@ -555,7 +632,6 @@ def save_run_metadata(run_dir: Path, config: PPOTrainingConfig, extra_metadata: 
         "eval_frequency": config.eval_frequency,
         "training_seeds": config.training_seeds,
         "validation_seeds": config.validation_seeds,
-        "scenario_name": config.scenario_name,
         "max_visible_disasters": config.max_visible_disasters,
         "sorting_strategy": config.sorting_strategy,
         "device": config.device,
@@ -570,9 +646,23 @@ def save_run_metadata(run_dir: Path, config: PPOTrainingConfig, extra_metadata: 
         "vf_coef": config.vf_coef,
         "clip_range": config.clip_range,
         "curriculum_stages": [serialize_stage(stage) for stage in config.curriculum_stages],
+        "best_model_selection_target": {
+            "validation_log_name": "curriculum_det",
+            "deterministic": True,
+            "selection_rule": "maximize success_rate, tie-break on avg_objective_score",
+        },
         **extra_metadata,
     }
     write_json(run_dir / "metadata.json", payload)
+
+
+def reset_rollout_tracking(model: MaskablePPO) -> None:
+    ep_info_buffer = getattr(model, "ep_info_buffer", None)
+    if ep_info_buffer is not None:
+        ep_info_buffer.clear()
+    ep_success_buffer = getattr(model, "ep_success_buffer", None)
+    if ep_success_buffer is not None:
+        ep_success_buffer.clear()
 
 
 def train_with_curriculum(
@@ -586,6 +676,7 @@ def train_with_curriculum(
     for index, stage in enumerate(config.curriculum_stages):
         stage_env = create_training_env(config.training_seeds, "ppo_train", stage)
         model.set_env(stage_env)
+        reset_rollout_tracking(model)
         validation_callback.set_stage(stage)
         action_debug_callback.set_stage(stage)
 

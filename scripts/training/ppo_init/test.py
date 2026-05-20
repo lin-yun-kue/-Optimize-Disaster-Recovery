@@ -14,10 +14,10 @@ def load_metrics(run_dir: Path) -> dict[str, Any]:
     metrics_path = run_dir / "training_metrics.json"
     return json.loads(metrics_path.read_text(encoding="utf-8"))
 
-DEFAULT_ACTOR_CHECKPOINT = "experiment_results/dispatch_ml/20260407_233420/dispatch_model.pt"
-DEFAULT_PPO_INIT_CHECKPOINT = "experiment_results/ppo_init_critic/20260513_063620/checkpoint.pt"
+DEFAULT_ACTOR_CHECKPOINT = "experiment_results/dispatch_ml/20260519_224933/dispatch_model.pt"
+# DEFAULT_PPO_INIT_CHECKPOINT = "experiment_results/ppo_init_critic/20260513_063620/checkpoint.pt"
 
-total_episodes = 800
+total_episodes = 400
 freeze_updates = 0
 seed = 0
 
@@ -32,8 +32,8 @@ config = PPOConfig(
                 seed=seed,
                 device="cuda",
                 save_dir=str(run_save_dir),
-                # actor_checkpoint=DEFAULT_ACTOR_CHECKPOINT
-                ppo_init_checkpoint=DEFAULT_PPO_INIT_CHECKPOINT
+                actor_checkpoint=DEFAULT_ACTOR_CHECKPOINT
+                # ppo_init_checkpoint=DEFAULT_PPO_INIT_CHECKPOINT
             )
 
 run_dir = train(config)

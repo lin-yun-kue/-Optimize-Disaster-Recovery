@@ -232,7 +232,7 @@ class DispatchScoringModel(nn.Module):
         current_resource: torch.Tensor,
         global_state: torch.Tensor,
         candidate_disasters: torch.Tensor,
-        candidate_mask: torch.Tensor | None = None,
+        candidate_mask: torch.Tensor,
     ) -> torch.Tensor:
         # Input shapes:
         # current_resource:   [B, current_dim]

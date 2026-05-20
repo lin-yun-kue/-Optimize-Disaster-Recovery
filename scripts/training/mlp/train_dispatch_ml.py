@@ -120,6 +120,7 @@ if __name__ == "__main__":
         depth=args.depth,
         dropout=args.dropout,
         device=device,
+        history_plot_path=run_dir / "validation_accuracy.png",
     )
     policy.metadata.update(
         {

@@ -12,6 +12,8 @@ import torch
 from torch import nn
 from torch.nn.modules.container import Sequential
 from torch.utils.data import DataLoader, TensorDataset
+import matplotlib.pyplot as plt
+from sklearn.model_selection import train_test_split
 
 from SimPyTest.engine import SimPySimulationEngine
 from SimPyTest.gym import DisasterResponseGym, ObsType
@@ -195,14 +197,24 @@ class DispatchScoringModel(nn.Module):
         #  - candidate_disasters (per decision): [B, max_visible_disasters, candidate_dim]
         #    e.g. [32, 5, 6]
         # The model scores each candidate as a scalar, then picks one index.
-        context_layers: list[nn.Module] = []
-        context_in = config.current_dim + config.global_dim
-        for _ in range(config.depth):
-            context_layers.append(nn.Linear(context_in, config.hidden_dim))
-            context_layers.append(nn.ReLU())
-            context_layers.append(nn.Dropout(config.dropout))
-            context_in = config.hidden_dim
-        self.context_encoder: Sequential = nn.Sequential(*context_layers)
+        # context_layers: list[nn.Module] = []
+        # context_in = config.current_dim + config.global_dim + (config.candidate_dim * config.maximum_visible_disasters)
+        # for _ in range(config.depth):
+        #     context_layers.append(nn.Linear(context_in, config.hidden_dim))
+        #     context_layers.append(nn.ReLU())
+        #     context_layers.append(nn.Dropout(config.dropout))
+        #     context_in = config.hidden_dim
+        # self.context_encoder: Sequential = nn.Sequential(*context_layers)
+
+        # deepset
+        context_in = config.current_dim + config.global_dim + config.candidate_dim
+        self.phi = nn.Sequential(
+            nn.Linear(context_in, config.hidden_dim),
+            nn.ReLU(),
+            nn.Linear(config.hidden_dim, config.hidden_dim),
+            nn.ReLU(),
+        )
+
 
         candidate_layers: list[nn.Module] = []
         candidate_in = config.hidden_dim + config.candidate_dim
@@ -215,26 +227,41 @@ class DispatchScoringModel(nn.Module):
         self.candidate_head: Sequential = nn.Sequential(*candidate_layers)
 
     @override
-    def forward(self, current_resource: torch.Tensor, global_state: torch.Tensor, candidate_disasters: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self,
+        current_resource: torch.Tensor,
+        global_state: torch.Tensor,
+        candidate_disasters: torch.Tensor,
+        candidate_mask: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         # Input shapes:
         # current_resource:   [B, current_dim]
         # global_state:       [B, global_dim]
         # candidate_disasters:[B, max_visible_disasters, candidate_dim]
+        # candidate_mask:     [B, max_visible_disasters]
         # Example: [32, 3], [32, 4], [32, 5, 6]
 
-        # Concatenate state context -> [B, current_dim + global_dim]
         context = torch.cat((current_resource, global_state), dim=1)
-        # Encode context once -> [B, hidden_dim]
-        context_features = self.context_encoder(context)
-        # Expand context per candidate for shared scoring:
-        # [B, hidden_dim] -> [B, 5, hidden_dim] when max_visible_disasters=5
-        repeated_context = context_features.unsqueeze(1).expand(-1, candidate_disasters.shape[1], -1)
-        # For each candidate, append candidate features:
-        # [B, 5, hidden_dim] + [B, 5, candidate_dim] -> [B, 5, hidden_dim + candidate_dim]
-        candidate_inputs = torch.cat((repeated_context, candidate_disasters), dim=2)
-        # Score each candidate with shared head -> [B, 5, 1] -> squeeze -> [B, 5]
-        # e.g. [32, 5]
-        return self.candidate_head(candidate_inputs).squeeze(-1)
+        expanded_context = context.unsqueeze(1).expand(-1, candidate_disasters.shape[1], -1)
+
+        phi_inputs = torch.cat((expanded_context, candidate_disasters), dim=2)
+        phi = self.phi(phi_inputs)
+
+        mask = candidate_mask.to(phi.dtype).unsqueeze(-1)
+        masked_phi = phi * mask
+        valid_count = mask.sum(dim=1).clamp(min=1.0)
+        set_representation = masked_phi.sum(dim=1) / valid_count
+
+        repeated_set = set_representation.unsqueeze(1).expand(-1, candidate_disasters.shape[1], -1)
+        candidate_inputs = torch.cat((repeated_set, candidate_disasters), dim=2)
+
+        logits = self.candidate_head(candidate_inputs).squeeze(-1)
+
+        # avoid padding
+        mask = candidate_mask.to(torch.bool)
+        masked_logits = logits.masked_fill(~mask, float("-inf"))
+        return masked_logits
+
 
 
 @dataclass
@@ -250,7 +277,8 @@ class TrainedDispatchPolicy:
             current_resource = torch.from_numpy(observation["current_resource"]).float().unsqueeze(0).to(self.device)
             global_state = torch.from_numpy(observation["global_state"]).float().unsqueeze(0).to(self.device)
             candidate_disasters = torch.from_numpy(observation["candidate_disasters"]).float().unsqueeze(0).to(self.device)
-            logits = self.model(current_resource, global_state, candidate_disasters).squeeze(0).cpu().numpy()
+            candidate_mask = torch.from_numpy(valid_actions).float().unsqueeze(0).to(self.device)
+            logits = self.model(current_resource, global_state, candidate_disasters, candidate_mask).squeeze(0).cpu().numpy()
 
         masked = np.where(valid_actions > 0, logits, -1e9)
         if np.all(valid_actions <= 0):
@@ -265,9 +293,11 @@ class TrainedDispatchPolicy:
     def save(self, output_dir: str | Path) -> None:
         path = Path(output_dir)
         path.mkdir(parents=True, exist_ok=True)
+        # If model wrapped in DataParallel, save underlying module's state_dict
+        state_dict = self.model.module.state_dict() if hasattr(self.model, "module") else self.model.state_dict()
         torch.save(
             {
-                "state_dict": self.model.state_dict(),
+                "state_dict": state_dict,
                 "metadata": self.metadata,
                 "max_visible_disasters": self.max_visible_disasters,
             },
@@ -290,7 +320,13 @@ class TrainedDispatchPolicy:
             dropout=float(metadata["dropout"]),
         )
         model = DispatchScoringModel(config)
-        model.load_state_dict(payload["state_dict"])
+        state_dict = payload["state_dict"]
+        # tolerate state_dicts saved from DataParallel (keys prefixed with 'module.')
+        try:
+            model.load_state_dict(state_dict)
+        except RuntimeError:
+            stripped = {k.replace("module.", ""): v for k, v in state_dict.items()}
+            model.load_state_dict(stripped)
         model.to(device)
         model.eval()
         return cls(
@@ -522,6 +558,25 @@ def _split_indices(size: int, validation_fraction: float, seed: int) -> tuple[np
     return train_indices.astype(np.int64), val_indices.astype(np.int64)
 
 
+
+
+
+def _plot_validation_accuracy(validation_epochs: list[int], validation_accuracies: list[float], save_path: Path) -> None:
+    if not validation_epochs:
+        return
+    save_path.parent.mkdir(parents=True, exist_ok=True)
+    plt.figure(figsize=(7, 4))
+    plt.plot(validation_epochs, validation_accuracies, marker="o", linestyle="-", color="tab:blue")
+    plt.title("Validation Accuracy")
+    plt.xlabel("Epoch")
+    plt.ylabel("Accuracy")
+    plt.ylim(0.0, 1.0)
+    plt.grid(True, linestyle="--", alpha=0.4)
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=150)
+    plt.close()
+
+
 def train_behavior_cloning(
     *,
     dataset: DemonstrationBatch,
@@ -530,13 +585,16 @@ def train_behavior_cloning(
     epochs: int = 20,
     batch_size: int = 256,
     learning_rate: float = 1e-3,
-    weight_decay: float = 1e-4,
+    weight_decay: float = 1e-3,
     validation_fraction: float = 0.1,
+    test_fraction: float = 0.1,
     hidden_dim: int = 256,
     depth: int = 3,
     dropout: float = 0.1,
     device: str = "cpu",
     model_type: str = "candidate_scorer",
+    validation_every_n_epochs: int = 50,
+    history_plot_path: str | Path | None = None,
 ) -> tuple[TrainedDispatchPolicy, TrainingHistory]:
     output_dim = int(max_visible_disasters)
     current_dim = int(dataset.current_resource.shape[1])
@@ -554,8 +612,39 @@ def train_behavior_cloning(
         dropout=dropout,
     )
     model = DispatchScoringModel(config).to(device)
+    # If CUDA requested and multiple GPUs are available, use DataParallel
+    try:
+        if isinstance(device, str) and device.startswith("cuda") and torch.cuda.device_count() > 1:
+            device_ids = list(range(torch.cuda.device_count()))
+            model = nn.DataParallel(model, device_ids=device_ids)
+            model.to(device)
+    except Exception:
+        # ignore and continue with single-device model
+        pass
 
-    train_indices, val_indices = _split_indices(len(dataset.actions), validation_fraction, seed)
+    # Use sklearn to create stratified train/val/test splits when possible.
+    indices = np.arange(len(dataset.actions))
+    total_val_test = validation_fraction + test_fraction
+    train_size = max(0.0, 1.0 - total_val_test)
+    stratify_arr = dataset.actions if hasattr(dataset, "actions") else None
+    train_indices, temp_indices = train_test_split(
+        indices,
+        train_size=train_size,
+        random_state=seed,
+        stratify=stratify_arr,
+    )
+
+    # split temp into val/test according to their relative sizes
+    test_rel = test_fraction / total_val_test if total_val_test > 0 else 0.5
+    stratify_temp = dataset.actions[temp_indices]
+    val_indices, test_indices = train_test_split(
+        temp_indices,
+        test_size=test_rel,
+        random_state=seed + 1,
+        stratify=stratify_temp,
+    )
+
+
     x = torch.from_numpy(dataset.observations)
     x_current = torch.from_numpy(dataset.current_resource)
     x_global = torch.from_numpy(dataset.global_state)
@@ -588,11 +677,28 @@ def train_behavior_cloning(
         shuffle=False,
     )
 
+    test_loader = DataLoader(
+        TensorDataset(
+            x[test_indices],
+            x_current[test_indices],
+            x_global[test_indices],
+            x_candidates[test_indices],
+            y[test_indices],
+            mask[test_indices],
+        ),
+        batch_size=batch_size,
+        shuffle=False,
+    )
+
     class_counts = np.bincount(dataset.actions, minlength=output_dim).astype(np.float32)
     class_weights = class_counts.sum() / np.maximum(class_counts, 1.0)
     criterion = nn.CrossEntropyLoss(weight=torch.from_numpy(class_weights).float().to(device))
     optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
     history_rows: list[dict[str, float]] = []
+    validation_epochs: list[int] = []
+    validation_accuracies: list[float] = []
+    last_val_loss = 0.0
+    last_val_accuracy = 0.0
     progress = _ConsoleProgressBar(total=epochs, label="Training epochs")
 
     for epoch in range(epochs):
@@ -609,7 +715,7 @@ def train_behavior_cloning(
             batch_mask = batch_mask.to(device)
 
             if model_type == "candidate_scorer":
-                logits = model(batch_current, batch_global, batch_candidates)
+                logits = model(batch_current, batch_global, batch_candidates, batch_mask)
             else:
                 logits = model(batch_x)
             masked_logits = torch.where(batch_mask > 0, logits, torch.full_like(logits, -1e9))
@@ -624,36 +730,43 @@ def train_behavior_cloning(
             train_correct += int((preds == batch_y).sum().item())
             train_total += int(batch_y.shape[0])
 
-        model.eval()
-        val_loss = 0.0
-        val_correct = 0
-        val_total = 0
-        with torch.no_grad():
-            for batch_x, batch_current, batch_global, batch_candidates, batch_y, batch_mask in val_loader:
-                batch_x = batch_x.to(device)
-                batch_current = batch_current.to(device)
-                batch_global = batch_global.to(device)
-                batch_candidates = batch_candidates.to(device)
-                batch_y = batch_y.to(device)
-                batch_mask = batch_mask.to(device)
-                if model_type == "candidate_scorer":
-                    logits = model(batch_current, batch_global, batch_candidates)
-                else:
-                    logits = model(batch_x)
-                masked_logits = torch.where(batch_mask > 0, logits, torch.full_like(logits, -1e9))
-                loss = criterion(masked_logits, batch_y)
-                val_loss += float(loss.item()) * int(batch_y.shape[0])
-                preds = torch.argmax(masked_logits, dim=1)
-                val_correct += int((preds == batch_y).sum().item())
-                val_total += int(batch_y.shape[0])
+        should_validate = (epoch == 0) or ((epoch + 1) % validation_every_n_epochs == 0) or (epoch == epochs - 1)
+        if should_validate:
+            model.eval()
+            val_loss = 0.0
+            val_correct = 0
+            val_total = 0
+            with torch.no_grad():
+                for batch_x, batch_current, batch_global, batch_candidates, batch_y, batch_mask in val_loader:
+                    batch_x = batch_x.to(device)
+                    batch_current = batch_current.to(device)
+                    batch_global = batch_global.to(device)
+                    batch_candidates = batch_candidates.to(device)
+                    batch_y = batch_y.to(device)
+                    batch_mask = batch_mask.to(device)
+                    if model_type == "candidate_scorer":
+                        logits = model(batch_current, batch_global, batch_candidates, batch_mask)
+                    else:
+                        logits = model(batch_x)
+                    masked_logits = torch.where(batch_mask > 0, logits, torch.full_like(logits, -1e9))
+                    loss = criterion(masked_logits, batch_y)
+                    val_loss += float(loss.item()) * int(batch_y.shape[0])
+                    preds = torch.argmax(masked_logits, dim=1)
+                    val_correct += int((preds == batch_y).sum().item())
+                    val_total += int(batch_y.shape[0])
+
+            last_val_loss = val_loss / max(val_total, 1)
+            last_val_accuracy = val_correct / max(val_total, 1)
+            validation_epochs.append(epoch + 1)
+            validation_accuracies.append(last_val_accuracy)
 
         history_rows.append(
             {
                 "epoch": float(epoch + 1),
                 "train_loss": train_loss / max(train_total, 1),
                 "train_accuracy": train_correct / max(train_total, 1),
-                "val_loss": val_loss / max(val_total, 1),
-                "val_accuracy": val_correct / max(val_total, 1),
+                "val_loss": last_val_loss,
+                "val_accuracy": last_val_accuracy,
             }
         )
         latest = history_rows[-1]
@@ -679,6 +792,38 @@ def train_behavior_cloning(
         "final_train_accuracy": history_rows[-1]["train_accuracy"] if history_rows else 0.0,
         "final_val_accuracy": history_rows[-1]["val_accuracy"] if history_rows else 0.0,
     }
+    if history_plot_path is not None:
+        _plot_validation_accuracy(validation_epochs, validation_accuracies, Path(history_plot_path))
+    # Evaluate on held-out test set
+    test_loss = 0.0
+    test_correct = 0
+    test_total = 0
+    model.eval()
+    with torch.no_grad():
+        for batch_x, batch_current, batch_global, batch_candidates, batch_y, batch_mask in test_loader:
+            batch_x = batch_x.to(device)
+            batch_current = batch_current.to(device)
+            batch_global = batch_global.to(device)
+            batch_candidates = batch_candidates.to(device)
+            batch_y = batch_y.to(device)
+            batch_mask = batch_mask.to(device)
+            if model_type == "candidate_scorer":
+                logits = model(batch_current, batch_global, batch_candidates, batch_mask)
+            else:
+                logits = model(batch_x)
+            masked_logits = torch.where(batch_mask > 0, logits, torch.full_like(logits, -1e9))
+            loss = criterion(masked_logits, batch_y)
+            test_loss += float(loss.item()) * int(batch_y.shape[0])
+            preds = torch.argmax(masked_logits, dim=1)
+            test_correct += int((preds == batch_y).sum().item())
+            test_total += int(batch_y.shape[0])
+
+    final_test_loss = test_loss / max(test_total, 1)
+    final_test_accuracy = test_correct / max(test_total, 1)
+    metadata["final_test_loss"] = final_test_loss
+    metadata["final_test_accuracy"] = final_test_accuracy
+    print(f"Test set results: loss={final_test_loss:.4f} accuracy={final_test_accuracy:.3f} (n={test_total})")
+
     trained = TrainedDispatchPolicy(
         model=model.eval(),
         device=device,

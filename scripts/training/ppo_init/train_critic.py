@@ -33,16 +33,16 @@ import json
 ROLLOUT_RESET_SEED_INDEX = 0
 @dataclass
 class PPOConfig:
-    scenario_name: str = "clatsop_landslide_ops"
+    scenario_name: str = "medium-winter"
     max_visible_disasters: int = 5
-    sorting_strategy: str = "most_progress"
+    sorting_strategy: str = "nearest"
     total_episodes: int = 50
-    rollout_steps: int = 1024
-    epochs: int = 3
-    minibatch_size: int = 256
+    rollout_steps: int = 128
+    epochs: int = 2
+    minibatch_size: int = 64
     gamma: float = 0.985
     gae_lambda: float = 0.92
-    clip_epsilon: float = 0.2
+    clip_epsilon: float = 0.2 #
     entropy_coef: float = 0.005
     value_coef: float = 0.5
     max_grad_norm: float = 0.3
@@ -61,9 +61,9 @@ class PPOConfig:
     save_dir: str = "experiment_results/init_critic"
     actor_checkpoint: str | None = None
     ppo_init_checkpoint: str | None = None
-    test_seeds: list[int] = field(default_factory=lambda: list(range(80, 90)))
-    evaluation_interval: int = 5
-    evaluation_seeds: list[int] = field(default_factory=lambda: [101, 102, 103, 104])
+    test_seeds: list[int] = field(default_factory=lambda: list(range(10000, 10005)))
+    evaluation_interval: int = 50
+    evaluation_seeds: list[int] = field(default_factory=lambda: list(range(2 * 10**5, 2 * 10**5 + 6)))
     rollout_reset_seeds: list[int] = field(default_factory=lambda: list(range(1000, 9000)))
     normalize_returns: bool = True
 
@@ -96,8 +96,8 @@ class DispatchActor(nn.Module):
         )
         self.scorer = DispatchScoringModel(config)
 
-    def forward(self, current_resource: torch.Tensor, global_state: torch.Tensor, candidate_disasters: torch.Tensor) -> torch.Tensor:
-        return self.scorer(current_resource, global_state, candidate_disasters)
+    def forward(self, current_resource: torch.Tensor, global_state: torch.Tensor, candidate_disasters: torch.Tensor, valid_actions: torch.Tensor) -> torch.Tensor:
+        return self.scorer(current_resource, global_state, candidate_disasters, valid_actions)
 
 
 class Critic(nn.Module):
@@ -138,9 +138,8 @@ class PPOAgent(nn.Module):
         candidate_disasters: torch.Tensor,
         valid_actions: torch.Tensor,
     ) -> Categorical:
-        logits = self.actor(current_resource, global_state, candidate_disasters)
-        masked_logits = logits.masked_fill(valid_actions <= 0, -1e9)
-        return Categorical(logits=masked_logits)
+        logits = self.actor(current_resource, global_state, candidate_disasters, valid_actions)
+        return Categorical(logits=logits)
 
     def value(
         self,
@@ -243,14 +242,21 @@ def evaluate_agent(
             action = predict_action(agent, observation, device, deterministic)
             observation, reward, terminated, truncated, info = env.step(action)
             total_reward += float(reward)
+
+        print(
+            f"Eval seed={seed} | success={bool(info['is_success'])} | objective_score={info.get('objective_score', 0.0)} | "
+            f"total_reward={total_reward:.2f} | terminated={terminated} | truncated={truncated} | "
+            f"last_outcome={env.engine.last_terminal_outcome}"
+        )
         episodes.append(
             {
                 "seed": int(seed),
                 "success": bool(info["is_success"]),
                 "objective_score": float(info.get("objective_score", 0.0)),
                 "total_reward": total_reward,
-                # "reward": total_reward,
-                # "terminal_outcome": info["terminal_outcome"],
+                "terminated": bool(terminated),
+                "truncated": bool(truncated),
+                "last_outcome": env.engine.last_terminal_outcome,
             }
         )
         # print(f"Checkpoint eval seed={seed} success={bool(info['is_success'])}")
@@ -283,8 +289,12 @@ def collect_rollout(
     config: PPOConfig,
     device: torch.device,
     current_obs: ObsType,
-) -> tuple[ObsType, float, dict[str, float]]:
+) -> tuple[ObsType, dict[str, float]]:
+    """Collect rollout and also track episode objective scores."""
     global ROLLOUT_RESET_SEED_INDEX
+
+    episode_objectives: list[float] = []
+    episode_rewards: list[float] = []
 
     for _ in range(config.rollout_steps):
         with torch.no_grad():
@@ -309,13 +319,23 @@ def collect_rollout(
         buffer.log_probs.append(log_prob)
 
         current_obs = next_obs
+        episode_rewards.append(float(reward))
 
         if done:
+            episode_objectives.append(float(info.get("objective_score", 0.0)))
             reset_seed = int(config.rollout_reset_seeds[ROLLOUT_RESET_SEED_INDEX ])
             ROLLOUT_RESET_SEED_INDEX += 1
             current_obs, _ = env.reset(seed=int(reset_seed))
+            episode_rewards = []
 
-    return current_obs
+    avg_episode_obj = statistics.mean(episode_objectives) if episode_objectives else 0.0
+    avg_episode_reward = statistics.mean(buffer.rewards) if buffer.rewards else 0.0
+
+    return current_obs, {
+        "train_avg_objective": avg_episode_obj,
+        "train_avg_reward": avg_episode_reward,
+        "train_episodes_completed": len(episode_objectives),
+    }
 
 
 def build_training_batch(buffer: TransitionBuffer, agent: PPOAgent, last_obs: ObsType, device: torch.device, config: PPOConfig) -> RolloutBatch:
@@ -431,6 +451,7 @@ def save_checkpoint(
     config: PPOConfig,
     step: int,
     actor_metadata: dict[str, Any],
+    filename: str = "checkpoint.pt",
 ) -> None:
     payload = {
         "step": step,
@@ -441,7 +462,19 @@ def save_checkpoint(
         "actor_metadata": actor_metadata,
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
     }
-    torch.save(payload, output_dir / "checkpoint.pt")
+    output_dir.mkdir(parents=True, exist_ok=True)
+    torch.save(payload, output_dir / filename)
+
+
+def is_better_evaluation(
+    current_eval: dict[str, float],
+    best_eval: dict[str, float] | None,
+) -> bool:
+    if best_eval is None:
+        return True
+    if current_eval["success_rate"] != best_eval["success_rate"]:
+        return current_eval["success_rate"] > best_eval["success_rate"]
+    return current_eval["avg_objective_score"] > best_eval["avg_objective_score"]
 
 
 def write_json(path: Path, payload: dict[str, Any]) -> None:
@@ -453,7 +486,6 @@ def format_duration(seconds: float) -> str:
     hours, remainder = divmod(total_seconds, 3600)
     minutes, secs = divmod(remainder, 60)
     return f"{hours:02d}:{minutes:02d}:{secs:02d}"
-
 
 def save_loss_plot(
     training_log: list[dict[str, Any]],
@@ -502,9 +534,6 @@ def save_evaluation_plot(
     fig.tight_layout()
     fig.savefig(output_path, dpi=150)
     plt.close(fig)
-
-
-
 def train(config: PPOConfig) -> Path:
     np.random.seed(config.seed)
     torch.manual_seed(config.seed)
@@ -536,10 +565,11 @@ def train(config: PPOConfig) -> Path:
     episodes_completed = 0
     training_log: list[dict[str, float]] = []
     evaluation_log: list[dict[str, Any]] = []
+    best_evaluation: dict[str, float] | None = None
 
     while episodes_completed < config.total_episodes:
         buffer.clear()
-        obs = collect_rollout(agent, env, buffer, config, device, obs)
+        obs, rollout_metrics = collect_rollout(agent, env, buffer, config, device, obs)
         # timestep += config.rollout_steps
         episodes_completed += 1
 
@@ -552,11 +582,24 @@ def train(config: PPOConfig) -> Path:
             "policy_loss": losses["policy_loss"],
             "value_loss": losses["value_loss"],
             "entropy": losses["entropy"],
+            "train_avg_objective": rollout_metrics["train_avg_objective"],
+            "train_avg_reward": rollout_metrics["train_avg_reward"],
         }
         training_log.append(record)
 
+        if episodes_completed % 100 == 0:
+            save_checkpoint(
+                run_dir,
+                agent,
+                optimizer,
+                config,
+                episodes_completed,
+                actor_metadata,
+                filename=f"{episodes_completed}.pt",
+            )
+            print(f"Saved periodic checkpoint at episode {episodes_completed}: {run_dir / f'{episodes_completed}.pt'}")
 
-        if episodes_completed % config.evaluation_interval == 0:
+        if episodes_completed == 1 or episodes_completed % config.evaluation_interval == 0:
             periodic_eval = evaluate_agent(
                 agent,
                 config,
@@ -564,6 +607,27 @@ def train(config: PPOConfig) -> Path:
                 deterministic=True,
                 eval_seeds=config.evaluation_seeds,
             )
+            current_eval = {
+                "success_rate": float(periodic_eval["success_rate"]),
+                "avg_objective_score": float(periodic_eval["avg_objective_score"]),
+            }
+            if is_better_evaluation(current_eval, best_evaluation):
+                best_evaluation = current_eval
+                save_checkpoint(
+                    run_dir,
+                    agent,
+                    optimizer,
+                    config,
+                    episodes_completed,
+                    actor_metadata,
+                    filename="best.pt",
+                )
+                print(
+                    f"Saved best model at episode {episodes_completed} | "
+                    f"success_rate={current_eval['success_rate']:.4f} | "
+                    f"avg_objective_score={current_eval['avg_objective_score']:.2f}"
+                )
+
             evaluation_log.append(
                 {
                     "iteration": episodes_completed,
@@ -577,16 +641,18 @@ def train(config: PPOConfig) -> Path:
                         }
                         for ep in periodic_eval["episodes"]
                     ],
-                    "avg_object_score": float(periodic_eval["avg_objective_score"]),
+                    "avg_object_score": current_eval["avg_objective_score"],
                     "avg_reward": float(periodic_eval["avg_total_reward"]),
-                    "success_rate": float(periodic_eval["success_rate"]),
+                    "success_rate": current_eval["success_rate"],
                 }
             )
             print(
                 f"Evaluation {episodes_completed}| "
-                f"obj={periodic_eval['avg_objective_score']:.2f} | "
-                f"success={periodic_eval['success_rate'] * 100:.1f}% | "
-                f"reward={periodic_eval['avg_total_reward']:.2f}"          
+                f"obj={current_eval['avg_objective_score']:.2f} | "
+                f"success={current_eval['success_rate'] * 100:.1f}% | "
+                f"reward={periodic_eval['avg_total_reward']:.2f} | "
+                f"train_obj={record['train_avg_objective']:.2f} | "
+                f"gap={record['train_avg_objective'] - current_eval['avg_objective_score']:.2f}"
             )
 
         if episodes_completed % config.log_interval == 0:
@@ -596,15 +662,37 @@ def train(config: PPOConfig) -> Path:
                 f"pi_loss={record['policy_loss']:.4f} | "
                 f"vf_loss={record['value_loss']:.4f} | "
                 f"entropy={record['entropy']:.4f} | "
+                f"train_obj={record['train_avg_objective']:.2f} | "
+                f"train_reward={record['train_avg_reward']:.4f}"
             )
 
     total_wall_time_s = time.perf_counter() - train_started_perf
     train_finished_at_utc = datetime.now(timezone.utc)
 
 
-    checkpoint_metrics = evaluate_agent(agent, config, device, deterministic=True)
+    checkpoint_metrics = evaluate_agent(agent, config, device, deterministic=True, eval_seeds=config.evaluation_seeds)
+    # final_eval = {
+    #     "success_rate": float(checkpoint_metrics["success_rate"]),
+    #     "avg_objective_score": float(checkpoint_metrics["avg_objective_score"]),
+    # }
+    # if is_better_evaluation(final_eval, best_evaluation):
+    #     best_evaluation = final_eval
+    #     save_checkpoint(
+    #         run_dir,
+    #         agent,
+    #         optimizer,
+    #         config,
+    #         episodes_completed,
+    #         actor_metadata,
+    #         filename="best",
+    #     )
+    #     print(
+    #         f"Saved best model at final evaluation | "
+    #         f"episodes={episodes_completed} | "
+    #         f"success_rate={final_eval['success_rate']:.4f} | "
+    #         f"avg_objective_score={final_eval['avg_objective_score']:.2f}"
+    #     )
     save_checkpoint(run_dir, agent, optimizer, config, episodes_completed, actor_metadata)
-
     save_loss_plot(
         training_log=training_log,
         loss_key="policy_loss",
@@ -694,10 +782,12 @@ if __name__ == "__main__":
     parser.add_argument("--critic-depth", type=int, default=PPOConfig.critic_depth)
     parser.add_argument("--freeze-actor-updates", type=int, default=PPOConfig.freeze_actor_updates)
     parser.add_argument("--log-interval", type=int, default=PPOConfig.log_interval)
-    parser.add_argument("--save-dir", type=str, default=PPOConfig.save_dir)
+    default_config = PPOConfig()
+    parser.add_argument("--save-dir", type=str, default=default_config.save_dir)
     parser.add_argument("--actor-checkpoint", type=str, default=None, help="Path to dispatch_model.pt from classification training.")
-    parser.add_argument("--evaluation-interval", type=int, default=PPOConfig.evaluation_interval)
-    parser.add_argument("--evaluation-seeds", type=int, nargs="+", default=PPOConfig.evaluation_seeds)
+    parser.add_argument("--ppo-init-checkpoint", type=str, default=None, help="Path to a PPO init checkpoint.pt to initialize training.")
+    parser.add_argument("--evaluation-interval", type=int, default=default_config.evaluation_interval)
+    parser.add_argument("--evaluation-seeds", type=int, nargs="+", default=default_config.evaluation_seeds)
     args = parser.parse_args()
 
     config = PPOConfig(
@@ -726,8 +816,9 @@ if __name__ == "__main__":
         log_interval=args.log_interval,
         save_dir=args.save_dir,
         actor_checkpoint=args.actor_checkpoint,
+        ppo_init_checkpoint=args.ppo_init_checkpoint,
         evaluation_interval=args.evaluation_interval,
         evaluation_seeds=args.evaluation_seeds,
     )
-    
+
     train(config)

@@ -44,7 +44,7 @@ DIFFICULTY_LEVELS: dict[str, dict[str, dict[str, tuple[tuple[int, int], tuple[in
             "fall": ((2, 8), (5, 15), (9, 22)),
         },
         "size_range_by_season": {
-            "winter": ((150, 3000), (200, 2000), (700, 7000)),
+            "winter": ((150, 3000), (200, 5000), (700, 7000)),
             # "winter": ((150, 3000), (200, 800), (700, 7000)),
             "spring": ((100, 2200), (100, 3500), (400, 5000)),
             "summer": ((50, 800), (50, 1200), (200, 2500)),

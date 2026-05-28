@@ -5,12 +5,13 @@ from typing import Any, Literal, TypedDict, cast
 import gymnasium as gym
 import numpy as np
 import numpy.typing as npt
+
 from gymnasium import spaces
 from simpy.core import EmptySchedule
 from typing_extensions import override
 
 from SimPyTest.calendar import Season
-from SimPyTest.engine import SimPySimulationEngine, SimulationRNG
+from SimPyTest.engine import SimPySimulationEngine
 from SimPyTest.evaluation import (
     ResearchMetricBundle,
     SimulationSummary,
@@ -25,14 +26,14 @@ from SimPyTest.simulation import Disaster, Resource, ResourceType
 
 OBSERVATION_VERSION = "v3"
 ACTION_VERSION = "v3"
-REWARD_VERSION = "v5"
+REWARD_VERSION = "v3"
 
 CURRENT_RESOURCE_FEATURES = 7
 GLOBAL_STATE_FEATURES = 10
 DISASTER_FEATURES = 14
 
 ActType = int
-SortOptions = Literal["nearest", "furthest", "random", "most_progress", "least_progress", "oldest", "newest"]
+SortOptions = Literal["nearest", "furthest", "random", "most_progress", "least_progress"]
 
 
 class ObsType(TypedDict):
@@ -87,7 +88,6 @@ class DisasterResponseGym(gym.Env[ObsType, ActType]):
         self.sorting_strategy = sorting_strategy
         self.controller_name = controller_name
         self.scenario_name = scenario_name
-        self.gym_rng = SimulationRNG(0)
 
         self.action_space: spaces.Space[ActType] = spaces.Discrete(self.max_slots)
         self.observation_space: spaces.Space[ObsType] = cast(
@@ -135,7 +135,9 @@ class DisasterResponseGym(gym.Env[ObsType, ActType]):
         self._last_requested_action: int | None = None
         self._last_executed_action: int | None = None
         self._last_action_kind: str | None = None
-        self._prev_training_objective_score: float | None = None
+        self._prev_objective_score: float | None = None
+        self._prev_active_disasters: int | None = None
+        self._prev_total_percent_remaining: float | None = None
         self.logger: DispatchEpisodeLogger | None = None
 
     def _clamp_unit(self, value: float) -> float:
@@ -215,14 +217,10 @@ class DisasterResponseGym(gym.Env[ObsType, ActType]):
             return sorted(candidates, key=lambda d: (-self._resource_sort_distance(resource, d), d.created_time, d.id))
         if self.sorting_strategy == "random":
             ordered = list(candidates)
-            self.gym_rng.shuffle(ordered)
-            return ordered
+            self.engine.rng.shuffle(ordered)
+            return sorted(ordered, key=lambda d: d.id)
         if self.sorting_strategy == "most_progress":
             return sorted(candidates, key=lambda d: (-(1.0 - d.percent_remaining()), d.created_time, d.id))
-        if self.sorting_strategy == "oldest":
-            return sorted(candidates, key=lambda d: d.id)
-        if self.sorting_strategy == "newest":
-            return sorted(candidates, key=lambda d: -d.id)
         return sorted(candidates, key=lambda d: (d.percent_remaining(), d.created_time, d.id))
 
     def _get_actionable_disasters(self, resource: Resource) -> list[Disaster]:
@@ -353,6 +351,8 @@ class DisasterResponseGym(gym.Env[ObsType, ActType]):
     def _calculate_reward(
         self,
         *,
+        previous_time: float,
+        current_time: float,
         terminal_outcome: str | None,
         invalid_action: bool,
         immediate_action_bonus: float,
@@ -360,31 +360,67 @@ class DisasterResponseGym(gym.Env[ObsType, ActType]):
         if self.engine is None:
             return 0.0, {}
 
-        summary = self._current_summary()
-        training_objective_score = compute_training_objective_score(summary)
-        previous_objective_score = self._prev_training_objective_score
-        objective_delta = training_objective_score - previous_objective_score if previous_objective_score is not None else 0.0
-
-        objective_delta_reward = objective_delta / 1_000.0
-        action_heuristic_reward = immediate_action_bonus * 0.1
-        reward = objective_delta_reward + action_heuristic_reward
+        summary = self.engine.summary()
+        objective_score = compute_training_objective_score(summary)
+        reward = immediate_action_bonus
         components = {
-            "objective_delta": objective_delta,
-            "objective_delta_reward": objective_delta_reward,
-            "action_heuristic_reward": action_heuristic_reward,
+            "dispatch_bonus": immediate_action_bonus,
+            "objective_delta": 0.0,
+            "resolution_reward": 0.0,
+            "time_penalty": 0.0,
             "invalid_action_penalty": 0.0,
-            "terminal_outcome_reward": 0.0,
-            "training_objective_score": training_objective_score,
+            "terminal_bonus": 0.0,
+            "remaining_disaster_penalty": 0.0,
+            "progress_reward": 0.0,
         }
 
+        if self._prev_objective_score is not None:
+            objective_delta = (objective_score - self._prev_objective_score) * 0.02
+            reward += objective_delta
+            components["objective_delta"] = objective_delta
+
+        active_disasters = len(self.engine.disaster_store.items)
+        if self._prev_active_disasters is not None and self._prev_active_disasters > active_disasters:
+            resolution_reward = float((self._prev_active_disasters - active_disasters) * 100.0)
+            reward += resolution_reward
+            components["resolution_reward"] = resolution_reward
+
+        total_percent_remaining = self._total_percent_remaining()
+        if self._prev_total_percent_remaining is not None:
+            progress_reward = max(0.0, self._prev_total_percent_remaining - total_percent_remaining) * 150.0
+            reward += progress_reward
+            components["progress_reward"] = progress_reward
+
+        elapsed = max(0.0, current_time - previous_time)
+        time_penalty = elapsed * 0.0005
+        reward -= time_penalty
+        components["time_penalty"] = -time_penalty
+
         if invalid_action:
-            reward -= 2.0
-            components["invalid_action_penalty"] = -2.0
+            reward -= 5.0
+            components["invalid_action_penalty"] = -5.0
 
-        if terminal_outcome is not None:
-            components["terminal_outcome_reward"] = objective_delta_reward
+        terminal_bonus = 0.0
+        if terminal_outcome == SimPySimulationEngine.TERMINAL_SUCCESS:
+            terminal_bonus = 5_000.0
+        elif terminal_outcome in {
+            SimPySimulationEngine.TERMINAL_FAIL_TIMEOUT,
+            SimPySimulationEngine.TERMINAL_FAIL_DEADLOCK,
+            SimPySimulationEngine.TERMINAL_FAIL_INVALID_STATE,
+        }:
+            terminal_bonus = -750.0
 
-        self._prev_training_objective_score = training_objective_score
+        remaining_disaster_penalty = 0.0
+        if terminal_outcome is not None and active_disasters > 0:
+            remaining_disaster_penalty = float(active_disasters) * -300.0
+
+        reward += terminal_bonus + remaining_disaster_penalty
+        components["terminal_bonus"] = terminal_bonus
+        components["remaining_disaster_penalty"] = remaining_disaster_penalty
+
+        self._prev_objective_score = objective_score
+        self._prev_active_disasters = active_disasters
+        self._prev_total_percent_remaining = total_percent_remaining
         return float(reward), components
 
     def _score_action(self, selected_disaster: Disaster | None, invalid_action: bool) -> float:
@@ -469,11 +505,13 @@ class DisasterResponseGym(gym.Env[ObsType, ActType]):
                 raise RuntimeError("Environment failed to reach a decision point or terminal state.")
 
     @override
-    def reset(self, *, seed: int, options: dict[str, Any] | None = None) -> tuple[ObsType, InfoType]:  # pyright: ignore[reportIncompatibleMethodOverride]
-        super().reset()
-        self.gym_rng = SimulationRNG(seed)
+    def reset(self, *, seed: int | None = None, options: dict[str, Any] | None = None) -> tuple[ObsType, InfoType]:  # pyright: ignore[reportIncompatibleMethodOverride]
+        gym_seed = None if seed is None else int(seed % (2**32 - 1))
+        super().reset(seed=gym_seed)
+        del options
 
-        assert seed is not None
+        if seed is None:
+            seed = int(np.random.randint(0, 2**31 - 1))
 
         self._episode_seed = seed
         gym_policy = Policy("gym_driver", lambda resource, disasters, env: None)
@@ -492,7 +530,9 @@ class DisasterResponseGym(gym.Env[ObsType, ActType]):
         self._last_requested_action = None
         self._last_executed_action = None
         self._last_action_kind = None
-        self._prev_training_objective_score = compute_training_objective_score(self._current_summary())
+        self._prev_objective_score = compute_training_objective_score(self.engine.summary())
+        self._prev_active_disasters = len(self.engine.disaster_store.items)
+        self._prev_total_percent_remaining = self._total_percent_remaining()
         self.logger = DispatchEpisodeLogger(
             controller_name=self.controller_name,
             scenario_name=self.scenario_name,
@@ -513,6 +553,7 @@ class DisasterResponseGym(gym.Env[ObsType, ActType]):
             if not self.decision_needed or self.current_resource is None:
                 raise RuntimeError("Environment is not currently waiting for a dispatch decision.")
 
+        previous_time = self.engine.env.now
         requested_action = int(action)
         selected_action = requested_action
         action_kind, selected_disaster, invalid_action = self._resolve_action(selected_action)
@@ -577,6 +618,8 @@ class DisasterResponseGym(gym.Env[ObsType, ActType]):
 
         obs = self._zero_obs() if (terminated or truncated) else self._get_obs()
         reward, reward_components = self._calculate_reward(
+            previous_time=previous_time,
+            current_time=self.engine.env.now,
             terminal_outcome=terminal_outcome,
             invalid_action=invalid_action,
             immediate_action_bonus=immediate_action_bonus,

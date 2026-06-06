@@ -1,0 +1,57 @@
+{
+  "batch_size": 256,
+  "candidate_dim": 14,
+  "current_dim": 7,
+  "dataset_metadata": {
+    "difficulties": [
+      "medium-winter"
+    ],
+    "difficulty": "medium-winter",
+    "episodes": [
+      {
+        "included_in_dataset": true,
+        "seed": 0,
+        "steps": 2398,
+        "success": true,
+        "teacher_policy": "tournament",
+        "terminal_outcome": "SUCCESS"
+      }
+    ],
+    "max_visible_disasters": 5,
+    "num_examples": 2398,
+    "seed_values": [
+      0
+    ],
+    "successful_episodes_only": false,
+    "teacher_counts": {
+      "tournament": 2398
+    },
+    "teachers": [
+      "tournament"
+    ],
+    "train_seeds": 1
+  },
+  "dataset_path": "experiment_results/dispatch_datasets/1_100.npz",
+  "dataset_paths": [
+    "experiment_results/dispatch_datasets/1_100.npz"
+  ],
+  "depth": 3,
+  "device": "cuda",
+  "dropout": 0.1,
+  "epochs": 800,
+  "eval_seeds": 10,
+  "final_test_accuracy": 0.916691232828253,
+  "final_test_loss": 0.8132713917403646,
+  "final_train_accuracy": 0.9506721499955779,
+  "final_val_accuracy": 0.914622641509434,
+  "global_dim": 10,
+  "hidden_dim": 256,
+  "input_dim": 92,
+  "learning_rate": 0.0001,
+  "max_visible_disasters": 5,
+  "model_type": "candidate_scorer",
+  "output_dim": 5,
+  "seed": 0,
+  "train_seeds": 10,
+  "weight_decay": 0.0001
+}

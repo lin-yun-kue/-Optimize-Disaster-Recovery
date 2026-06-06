@@ -1,0 +1,14 @@
+simpy
+numpy
+matplotlib
+networkx
+shapely
+geopandas
+pyproj
+rtree
+pandas
+gymnasium
+stable-baselines3
+sb3-contrib
+torch
+typing_extensions

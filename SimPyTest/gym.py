@@ -1,540 +1,589 @@
 from __future__ import annotations
-from simpy.core import EmptySchedule
-from .simulation import Disaster, Resource, ResourceType, Landslide
 
-from simpy.events import Event
-from typing import Literal, TypedDict, cast
-from typing import Never
-from collections.abc import Generator
-from typing_extensions import override
+from typing import Any, Literal, TypedDict, cast
 
 import gymnasium as gym
 import numpy as np
 import numpy.typing as npt
 from gymnasium import spaces
-from .engine import ScenarioConfig, SimPySimulationEngine
-from .policies import Policy, is_useful
+from simpy.core import EmptySchedule
+from typing_extensions import override
 
+from SimPyTest.calendar import Season
+from SimPyTest.engine import SimPySimulationEngine, SimulationRNG
+from SimPyTest.evaluation import (
+    ResearchMetricBundle,
+    SimulationSummary,
+    compute_research_metric_bundle,
+    compute_training_objective_score,
+)
+from SimPyTest.gis_utils import CLATSOP_LOCAL_COORD_MAX, meters_to_miles, travel_minutes_from_distance
+from SimPyTest.gym_logging import DispatchEpisodeLogger, build_decision_log_record, finalize_episode_log
+from SimPyTest.policies import Policy
+from SimPyTest.scenario_types import ScenarioConfig
+from SimPyTest.simulation import Disaster, Resource, ResourceType
 
-# Define generic types for Gymnasium
-# ObsType = dict[str, np.ndarray | int]
-class ObsType(TypedDict):
-    current_resource_type: int
-    visible_disasters: npt.NDArray[np.float32]  # Shape: (max_slots, features)
-    valid_actions: npt.NDArray[np.int8]  # Shape: (max_slots,)
-    idle_trucks: tuple[float]  # Number of idle trucks normalized
-    idle_excavators: tuple[float]  # Number of idle excavators normalized
-    season: tuple[int]  # Current season (0=winter, 1=spring, 2=summer, 3=fall)
-    weather_factor: tuple[float]  # Current weather modifier for disasters
-    budget_utilization: tuple[float]  # Budget spent / budget total (0-1)
-    avg_response_time: tuple[float]  # Average response time for resolved disasters
-    # avg_disaster_progress: float  # Average progress across all disasters
+OBSERVATION_VERSION = "v3"
+ACTION_VERSION = "v3"
+REWARD_VERSION = "v5"
 
+CURRENT_RESOURCE_FEATURES = 7
+GLOBAL_STATE_FEATURES = 10
+DISASTER_FEATURES = 14
 
 ActType = int
+SortOptions = Literal["nearest", "furthest", "random", "most_progress", "least_progress", "oldest", "newest"]
 
-SortOptions = Literal["nearest", "furthest", "random", "most_progress", "least_progress"]
+
+class ObsType(TypedDict):
+    current_resource: npt.NDArray[np.float32]
+    global_state: npt.NDArray[np.float32]
+    candidate_disasters: npt.NDArray[np.float32]
+    valid_actions: npt.NDArray[np.int8]
 
 
 class InfoType(TypedDict):
     sim_time: float
     active_disasters: int
     season: str
-    weather_factor: float
     calendar_date: str | None
-    budget_spent: float
-    budget_remaining: float
-    budget_utilization: float
+    total_spent: float
+    research_metrics: ResearchMetricBundle
+    training_objective_score: float
+    objective_score: float
+    reward_components: dict[str, float]
+    summary: SimulationSummary
+    terminal_outcome: str | None
+    is_success: bool
+    is_failure: bool
+    is_truncated: bool
+    invalid_action: bool
+    selected_action: int | None
+    selected_action_kind: str | None
+    visible_candidate_ids: list[int]
+    observation_version: str
+    action_version: str
+    reward_version: str
+    invalid_action_count: int
+    invalid_action_remaps: int
+    valid_action_count: int
+    requested_action: int | None
+    executed_action: int | None
 
 
-class DisasterResponseEnv(gym.Env[ObsType, ActType]):
-    """
-    Gymnasium environment for Disaster Response.
-
-    max_visible_disasters: The maximum number of disasters that can be visible at once.
-    sorting_strategy: The sorting strategy to use when multiple disasters are visible.
-    """
-
+class DisasterResponseGym(gym.Env[ObsType, ActType]):
     def __init__(
-        self, max_visible_disasters: int, sorting_strategy: SortOptions, scenario_config: ScenarioConfig | None = None
+        self,
+        max_visible_disasters: int,
+        sorting_strategy: SortOptions,
+        scenario_config: ScenarioConfig,
+        *,
+        controller_name: str = "ppo",
+        scenario_name: str = "custom",
     ):
         super().__init__()
-        self.scenario_config: ScenarioConfig = scenario_config or ScenarioConfig()
-        self.max_slots: int = max_visible_disasters
-        self.sorting_strategy: str = sorting_strategy
+        self.scenario_config = scenario_config
+        self.max_slots = max_visible_disasters
+        self.sorting_strategy = sorting_strategy
+        self.controller_name = controller_name
+        self.scenario_name = scenario_name
+        self.gym_rng = SimulationRNG(0)
 
-        # Action: Index of the disaster to assign the current resource to
         self.action_space: spaces.Space[ActType] = spaces.Discrete(self.max_slots)
-
-        self.num_resource_types: int = len(ResourceType)
-        self.num_disaster_types: int = 1  # Just Landslide for now
-
-        # Disaster Features:
-        # 1. TypeID
-        # 2. Progress (0-1)
-        # 3. Total Dirt
-        # 4. Distance
-        # 5. Num Trucks Assigned
-        # 6. Num Excavators Assigned
-        self.num_disaster_features: int = self.num_disaster_types + 5
-
-        # Observation:
-        # 1. Current Resource Type as an index
-        # 2. Visible Disasters as a matrix of [TypeID, Progress, Total Dirt, Distance, Num Trucks Assigned, Num Excavators Assigned]
-        # 3. Additional resource availability info
         self.observation_space: spaces.Space[ObsType] = cast(
             spaces.Space[ObsType],
             spaces.Dict(
                 {
-                    "current_resource_type": spaces.Discrete(self.num_resource_types),
-                    "visible_disasters": spaces.Box(
-                        low=0,
-                        high=1,
-                        shape=(self.max_slots, self.num_disaster_features),
+                    "current_resource": spaces.Box(
+                        low=0.0,
+                        high=1.0,
+                        shape=(CURRENT_RESOURCE_FEATURES,),
                         dtype=np.float32,
                     ),
-                    "valid_actions": spaces.Box(low=0, high=1, shape=(self.max_slots,), dtype=np.int8),
-                    "idle_trucks": spaces.Box(low=0, high=1, shape=(1,), dtype=np.float32),
-                    "idle_excavators": spaces.Box(low=0, high=1, shape=(1,), dtype=np.float32),
-                    # Seasonal features: season (4 categories), weather factor (0-1)
-                    "season": spaces.Box(low=0, high=3, shape=(1,), dtype=np.int8),  # 0-3 for 4 seasons
-                    "weather_factor": spaces.Box(low=0, high=1, shape=(1,), dtype=np.float32),
-                    # Budget features: budget utilization (0-1)
-                    "budget_utilization": spaces.Box(low=0, high=1, shape=(1,), dtype=np.float32),
-                    # Metrics: avg response time
-                    "avg_response_time": spaces.Box(low=0, high=10000, shape=(1,), dtype=np.float32),
-                    # "avg_disaster_progress": spaces.Box(low=0, high=1, shape=(), dtype=np.float32),
+                    "global_state": spaces.Box(
+                        low=0.0,
+                        high=1.0,
+                        shape=(GLOBAL_STATE_FEATURES,),
+                        dtype=np.float32,
+                    ),
+                    "candidate_disasters": spaces.Box(
+                        low=0.0,
+                        high=1.0,
+                        shape=(self.max_slots, DISASTER_FEATURES),
+                        dtype=np.float32,
+                    ),
+                    "valid_actions": spaces.Box(
+                        low=0,
+                        high=1,
+                        shape=(self.max_slots,),
+                        dtype=np.int8,
+                    ),
                 }
             ),
         )
 
-        # Mapping from visible disaster index to disaster ID
-        self.visible_disaster_mapping: dict[int, int] = {}
-
-        # SimPy stuff
         self.engine: SimPySimulationEngine | None = None
         self.current_resource: Resource | None = None
-        self.current_action: int | None = None
-        self.decision_needed: bool = False
+        self.current_candidates: list[Disaster] = []
+        self.decision_needed = False
 
-        self._prev_dirt_total: float | None = None
+        self._episode_seed = 0
+        self._invalid_action_count = 0
+        self._invalid_action_remaps = 0
+        self._last_invalid_action = False
+        self._last_selected_action: int | None = None
+        self._last_requested_action: int | None = None
+        self._last_executed_action: int | None = None
+        self._last_action_kind: str | None = None
+        self._prev_training_objective_score: float | None = None
+        self.logger: DispatchEpisodeLogger | None = None
+
+    def _clamp_unit(self, value: float) -> float:
+        return float(min(max(value, 0.0), 1.0))
+
+    def _scenario_max_resource_count(self, value: int | tuple[int, int]) -> int:
+        if isinstance(value, tuple):
+            return int(value[1])
+        return int(value)
+
+    def _max_total_resources(self) -> int:
+        counts = self.scenario_config.resource_counts
+        return max(1, self._scenario_max_resource_count(counts.trucks) + self._scenario_max_resource_count(counts.excavators))
+
+    def _max_distance_miles(self) -> float:
+        return max(1.0, meters_to_miles(CLATSOP_LOCAL_COORD_MAX))
+
+    def _max_travel_minutes(self) -> float:
+        slowest_speed = min(float(resource_type.specs["speed"]) for resource_type in ResourceType)
+        return max(1.0, travel_minutes_from_distance(self._max_distance_miles(), slowest_speed))
+
+    def _max_active_disasters(self) -> int:
+        return 25
+
+    def _current_summary(self) -> SimulationSummary:
+        if self.engine is None:
+            raise RuntimeError("Environment not initialized")
+        return self.engine.summary()
+
+    def _total_percent_remaining(self) -> float:
+        if self.engine is None:
+            return 0.0
+        return float(sum(disaster.percent_remaining() for disaster in self.engine.disaster_store.items))
+
+    def _valid_actions(self) -> npt.NDArray[np.int8]:
+        valid_actions = np.zeros(self.max_slots, dtype=np.int8)
+        valid_actions[: len(self.current_candidates)] = 1
+        return valid_actions
+
+    def action_masks(self) -> npt.NDArray[np.bool_]:
+        return self._valid_actions().astype(np.bool_)
+
+    def _zero_obs(self) -> ObsType:
+        return {
+            "current_resource": np.zeros(CURRENT_RESOURCE_FEATURES, dtype=np.float32),
+            "global_state": np.zeros(GLOBAL_STATE_FEATURES, dtype=np.float32),
+            "candidate_disasters": np.zeros((self.max_slots, DISASTER_FEATURES), dtype=np.float32),
+            "valid_actions": np.zeros(self.max_slots, dtype=np.int8),
+        }
+
+    def _normalize_resource_count(self, count: int, resource_type: ResourceType) -> float:
+        counts = self.scenario_config.resource_counts
+        max_counts = {
+            ResourceType.TRUCK: self._scenario_max_resource_count(counts.trucks),
+            ResourceType.EXCAVATOR: self._scenario_max_resource_count(counts.excavators),
+        }
+        return self._clamp_unit(count / max(1, max_counts[resource_type]))
+
+    def _normalize_location(self, loc: tuple[float, float]) -> tuple[float, float]:
+        max_coord = max(1.0, meters_to_miles(CLATSOP_LOCAL_COORD_MAX))
+        return (
+            self._clamp_unit(abs(loc[0]) / max_coord),
+            self._clamp_unit(abs(loc[1]) / max_coord),
+        )
+
+    def _resource_sort_distance(self, resource: Resource, disaster: Disaster) -> float:
+        if self.engine is None:
+            return 0.0
+        return float(self.engine.get_distance(resource, disaster))
+
+    def _sort_candidates(self, resource: Resource, candidates: list[Disaster]) -> list[Disaster]:
+        if self.engine is None:
+            return []
+        if self.sorting_strategy == "nearest":
+            return sorted(candidates, key=lambda d: (self._resource_sort_distance(resource, d), d.created_time, d.id))
+        if self.sorting_strategy == "furthest":
+            return sorted(candidates, key=lambda d: (-self._resource_sort_distance(resource, d), d.created_time, d.id))
+        if self.sorting_strategy == "random":
+            ordered = list(candidates)
+            self.gym_rng.shuffle(ordered)
+            return ordered
+        if self.sorting_strategy == "most_progress":
+            return sorted(candidates, key=lambda d: (-(1.0 - d.percent_remaining()), d.created_time, d.id))
+        if self.sorting_strategy == "oldest":
+            return sorted(candidates, key=lambda d: d.id)
+        if self.sorting_strategy == "newest":
+            return sorted(candidates, key=lambda d: -d.id)
+        return sorted(candidates, key=lambda d: (d.percent_remaining(), d.created_time, d.id))
+
+    def _get_actionable_disasters(self, resource: Resource) -> list[Disaster]:
+        if self.engine is None:
+            return []
+        actionable = [disaster for disaster in self.engine.disaster_store.items if resource.resource_type in disaster.required_resources]
+        return self._sort_candidates(resource, actionable)[: self.max_slots]
+
+    def _build_current_resource_features(self) -> npt.NDArray[np.float32]:
+        features = np.zeros(CURRENT_RESOURCE_FEATURES, dtype=np.float32)
+        if self.current_resource is None:
+            return features
+        resource_id_norm = self._clamp_unit(self.current_resource.id / self._max_total_resources())
+        x_norm, y_norm = self._normalize_location(self.current_resource.location)
+        features[0] = resource_id_norm
+        features[1 + self.current_resource.resource_type.value] = 1.0
+        features[-2] = x_norm
+        features[-1] = y_norm
+        return features
+
+    def _build_global_state_features(self) -> npt.NDArray[np.float32]:
+        features = np.zeros(GLOBAL_STATE_FEATURES, dtype=np.float32)
+        if self.engine is None:
+            return features
+        season_map = {Season.WINTER: 0, Season.SPRING: 1, Season.SUMMER: 2, Season.FALL: 3}
+        season_idx = season_map.get(self.engine.calendar.get_season(), 0)
+        active_disasters = len(self.engine.disaster_store.items)
+        idle_resources = self.engine.idle_resources
+
+        cursor = 0
+        features[cursor] = self._clamp_unit(self.engine.env.now / self.engine.MAX_SIM_TIME)
+        cursor += 1
+        features[cursor + season_idx] = 1.0
+        cursor += 4
+        features[cursor] = self._clamp_unit(active_disasters / self._max_active_disasters())
+        cursor += 1
+        for resource_type in ResourceType:
+            count = len(idle_resources.inventory[resource_type].items)
+            features[cursor] = self._normalize_resource_count(count, resource_type)
+            cursor += 1
+        return features
+
+    def _build_candidate_feature_matrix(self) -> npt.NDArray[np.float32]:
+        features = np.zeros((self.max_slots, DISASTER_FEATURES), dtype=np.float32)
+        if self.engine is None or self.current_resource is None:
+            return features
+
+        max_travel_minutes = self._max_travel_minutes()
+        for idx, disaster in enumerate(self.current_candidates):
+            row = np.zeros(DISASTER_FEATURES, dtype=np.float32)
+            row[0] = self._clamp_unit(disaster.id / 10_000.0)
+            row[1 + disaster.one_hot_index] = 1.0
+            row[5] = self._clamp_unit(disaster.get_scale())
+            row[6] = self._clamp_unit(1.0 - disaster.percent_remaining())
+            row[7] = self._clamp_unit((self.engine.env.now - disaster.created_time) / self.engine.MAX_SIM_TIME)
+            distance = self.engine.get_distance(self.current_resource, disaster)
+            speed = float(self.current_resource.resource_type.specs["speed"])
+            row[8] = self._clamp_unit(travel_minutes_from_distance(distance, speed) / max_travel_minutes)
+            cursor = 9
+            for resource_type in ResourceType:
+                row[cursor] = self._normalize_resource_count(len(disaster.roster[resource_type]), resource_type)
+                cursor += 1
+            features[idx] = row
+        return features
 
     def _get_obs(self) -> ObsType:
-        """Constructs the observation vector from simulation state."""
-        if self.engine is None:
-            raise Exception("Environment must be reset before calling step().")
-        if self.current_resource is None:
-            raise Exception("The current resource is none. This should never happen.")
-
-        disasters = self.engine.disaster_store.items
-        candidates = [d for d in disasters if is_useful(self.current_resource, d)]
-
-        def distance_sort(d: Disaster):
-            if self.engine is None or self.current_resource is None:
-                return float("inf")
-            return self.engine.get_distance(self.current_resource, d)
-
-        if self.sorting_strategy == "nearest":
-            candidates.sort(key=distance_sort, reverse=True)
-        elif self.sorting_strategy == "furthest":
-            candidates.sort(key=distance_sort, reverse=False)
-        elif self.sorting_strategy == "random":
-            self.engine.rng.shuffle(candidates)
-        elif self.sorting_strategy == "most_progress":
-            candidates.sort(key=lambda d: d.percent_remaining(), reverse=True)
-        elif self.sorting_strategy == "least_progress":
-            candidates.sort(key=lambda d: d.percent_remaining(), reverse=False)
-        else:
-            raise Exception(f"Invalid sorting strategy: {self.sorting_strategy}")
-
-        candidates = candidates[: self.max_slots]
-
-        features = np.zeros((self.max_slots, self.num_disaster_features), dtype=np.float32)
-        valid_actions = np.zeros(self.max_slots, dtype=np.int8)
-        temp_visible_disaster_mapping = {}
-
-        for i, d in enumerate(candidates):
-            temp_visible_disaster_mapping[i] = d.id
-
-            # Disaster Type
-            type_one_hot = np.zeros(self.num_disaster_types, dtype=np.float32)
-            type_one_hot[d.one_hot_index] = 1.0
-
-            # Progress
-            progress = d.percent_remaining()
-
-            # Total Dirt
-            scale = d.get_scale()
-
-            # Distance
-            dist = self.engine.get_distance(self.current_resource, d)
-
-            # Trucks
-            trucks = len(d.roster[ResourceType.TRUCK])
-
-            # Excavators
-            excavators = len(d.roster[ResourceType.EXCAVATOR])
-
-            features[i] = np.concatenate((type_one_hot, [progress, scale, dist, trucks, excavators]))
-            valid_actions[i] = 1.0
-
-        self.visible_disaster_mapping = temp_visible_disaster_mapping
-
-        # Calculate additional observation features
-        roster = self.engine.idle_resources.roster
-        idle_trucks = len(roster[ResourceType.TRUCK])
-        idle_excavators = len(roster[ResourceType.EXCAVATOR])
-
-        # Normalize by max possible resources (use upper bounds from scenario config)
-        max_trucks = (
-            self.engine.scenario_config.num_trucks[1]
-            if isinstance(self.engine.scenario_config.num_trucks, tuple)
-            else self.engine.scenario_config.num_trucks
-        )
-        max_excavators = (
-            self.engine.scenario_config.num_excavators[1]
-            if isinstance(self.engine.scenario_config.num_excavators, tuple)
-            else self.engine.scenario_config.num_excavators
-        )
-
-        idle_trucks_norm = min(idle_trucks / max_trucks, 1.0) if max_trucks > 0 else 0.0
-        idle_excavators_norm = min(idle_excavators / max_excavators, 1.0) if max_excavators > 0 else 0.0
-
-        # Get seasonal features from calendar if available
-        season_value = 0
-        weather_factor = 0.0
-        if self.engine.calendar is not None:
-            from .calendar import Season
-
-            season = self.engine.calendar.get_season()
-            season_map = {Season.WINTER: 0, Season.SPRING: 1, Season.SUMMER: 2, Season.FALL: 3}
-            season_value = season_map.get(season, 0)
-            # Get average weather factor for different disaster types
-            weather_factor = (
-                self.engine.calendar.get_weather_factor("landslide")
-                + self.engine.calendar.get_weather_factor("snow")
-                + self.engine.calendar.get_weather_factor("flood")
-            ) / 3.0
-
-        # Get budget utilization
-        budget_utilization = 0.0
-        avg_response_time = 0.0
-        if self.engine.scenario_config.track_costs:
-            summary = self.engine.get_summary()
-            budget_utilization = summary.get("budget_utilization", 0.0)
-            avg_response_time = summary.get("avg_response_time", 0.0)
-
         return {
-            "current_resource_type": self.current_resource.resource_type.value,
-            "visible_disasters": features,
-            "valid_actions": valid_actions,
-            "idle_trucks": (float(idle_trucks_norm),),
-            "idle_excavators": (float(idle_excavators_norm),),
-            "season": (int(season_value),),
-            "weather_factor": (float(weather_factor),),
-            "budget_utilization": (float(budget_utilization),),
-            "avg_response_time": (float(avg_response_time),),
-            # "avg_disaster_progress": float(avg_progress),
+            "current_resource": self._build_current_resource_features(),
+            "global_state": self._build_global_state_features(),
+            "candidate_disasters": self._build_candidate_feature_matrix(),
+            "valid_actions": self._valid_actions(),
         }
 
     def _get_info(self) -> InfoType:
+        summary = self._current_summary() if self.engine is not None else SimulationSummary(None, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0, 0, 0.0, 0.0, 0.0, 0.0)
+        terminal_outcome = self.engine.last_terminal_outcome if self.engine is not None else None
         season_str = "unknown"
-        weather_factor = 0.0
         calendar_date = None
-        budget_spent = 0.0
-        budget_remaining = 0.0
-        budget_utilization = 0.0
-
         if self.engine is not None:
-            if self.engine.calendar is not None:
-                from .calendar import Season
-
-                season = self.engine.calendar.get_season()
-                season_str = season.name.lower()
-                weather_factor = self.engine.calendar.get_weather_factor("landslide")
-                calendar_date = str(self.engine.calendar)
-
-            if self.engine.scenario_config.track_costs:
-                summary = self.engine.get_summary()
-                budget_spent = summary.get("total_spent", 0.0)
-                budget_remaining = summary.get("budget_remaining", 0.0)
-                budget_utilization = summary.get("budget_utilization", 0.0)
-
+            season_str = self.engine.calendar.get_season().name.lower()
+            calendar_date = str(self.engine.calendar)
         return {
-            "sim_time": self.engine.env.now if self.engine else 0,
-            "active_disasters": len(self.engine.disaster_store.items) if self.engine else 0,
+            "sim_time": self.engine.env.now if self.engine is not None else 0.0,
+            "active_disasters": len(self.engine.disaster_store.items) if self.engine is not None else 0,
             "season": season_str,
-            "weather_factor": weather_factor,
             "calendar_date": calendar_date,
-            "budget_spent": budget_spent,
-            "budget_remaining": budget_remaining,
-            "budget_utilization": budget_utilization,
+            "total_spent": summary.total_spent,
+            "research_metrics": compute_research_metric_bundle(summary),
+            "training_objective_score": compute_training_objective_score(summary),
+            "objective_score": compute_training_objective_score(summary),
+            "reward_components": {},
+            "summary": summary,
+            "terminal_outcome": terminal_outcome,
+            "is_success": terminal_outcome == SimPySimulationEngine.TERMINAL_SUCCESS,
+            "is_failure": terminal_outcome
+            in {
+                SimPySimulationEngine.TERMINAL_FAIL_DEADLOCK,
+                SimPySimulationEngine.TERMINAL_FAIL_INVALID_STATE,
+                SimPySimulationEngine.TERMINAL_FAIL_TIMEOUT,
+            },
+            "is_truncated": terminal_outcome == SimPySimulationEngine.TERMINAL_FAIL_TIMEOUT,
+            "invalid_action": self._last_invalid_action,
+            "selected_action": self._last_selected_action,
+            "selected_action_kind": self._last_action_kind,
+            "visible_candidate_ids": [disaster.id for disaster in self.current_candidates],
+            "observation_version": OBSERVATION_VERSION,
+            "action_version": ACTION_VERSION,
+            "reward_version": REWARD_VERSION,
+            "invalid_action_count": self._invalid_action_count,
+            "invalid_action_remaps": self._invalid_action_remaps,
+            "valid_action_count": len(self.current_candidates),
+            "requested_action": self._last_requested_action,
+            "executed_action": self._last_executed_action,
         }
+
+    def _resolve_action(self, action: int) -> tuple[str, Disaster | None, bool]:
+        if 0 <= action < len(self.current_candidates):
+            return "DISPATCH", self.current_candidates[action], False
+        return "INVALID", None, True
+
+    def _remap_invalid_action(self) -> tuple[int, Disaster | None]:
+        valid_indices = np.flatnonzero(self._valid_actions() == 1)
+        if len(valid_indices) == 0:
+            return 0, None
+        remapped = int(valid_indices[0])
+        return remapped, self.current_candidates[remapped]
 
     def _calculate_reward(
         self,
-        last_time: float,
-        current_time: float,
-        terminated: bool,
-        truncated: bool,
-        is_valid_action: bool,
-    ) -> float:
-        """
-        Calculate comprehensive reward based on progress, coordination, and efficiency.
-        """
+        *,
+        terminal_outcome: str | None,
+        invalid_action: bool,
+        immediate_action_bonus: float,
+    ) -> tuple[float, dict[str, float]]:
         if self.engine is None:
-            return 0.0
+            return 0.0, {}
 
-        reward = 0.0
+        summary = self._current_summary()
+        training_objective_score = compute_training_objective_score(summary)
+        previous_objective_score = self._prev_training_objective_score
+        objective_delta = training_objective_score - previous_objective_score if previous_objective_score is not None else 0.0
 
-        # Terminal condition rewards
-        if terminated:
-            time_bonus = max(0, 5000 - current_time) / 50  # Up to +100 bonus for fast completion
-            reward += 100.0 + time_bonus
-        elif truncated:
-            # Failure: heavy penalty
-            reward -= 100.0
+        objective_delta_reward = objective_delta / 1_000.0
+        action_heuristic_reward = immediate_action_bonus * 0.1
+        reward = objective_delta_reward + action_heuristic_reward
+        components = {
+            "objective_delta": objective_delta,
+            "objective_delta_reward": objective_delta_reward,
+            "action_heuristic_reward": action_heuristic_reward,
+            "invalid_action_penalty": 0.0,
+            "terminal_outcome_reward": 0.0,
+            "training_objective_score": training_objective_score,
+        }
 
-        # Invalid action penalty
-        if not is_valid_action:
-            reward -= 10.0
-            return reward
+        if invalid_action:
+            reward -= 2.0
+            components["invalid_action_penalty"] = -2.0
 
-        # Calculate progress deltas
-        current_dirt_total = 0.0
-        current_disasters_completed = 0
+        if terminal_outcome is not None:
+            components["terminal_outcome_reward"] = objective_delta_reward
 
-        for disaster in self.engine.disaster_store.items:
-            if isinstance(disaster, Landslide):
-                # Track remaining dirt
-                current_dirt_total += disaster.dirt.level
+        self._prev_training_objective_score = training_objective_score
+        return float(reward), components
 
-        # Count disasters that were resolved
-        if hasattr(self, "_prev_dirt_total") and self._prev_dirt_total is not None:
-            dirt_removed = max(0, self._prev_dirt_total - current_dirt_total)
-            # Reward proportional to dirt removed (0.5 per unit)
-            reward += dirt_removed * 0.5
+    def _score_action(self, selected_disaster: Disaster | None, invalid_action: bool) -> float:
+        if self.engine is None or self.current_resource is None or invalid_action or selected_disaster is None:
+            return -1.5 if invalid_action else 0.0
 
-        # Store current state for next comparison
-        self._prev_dirt_total = current_dirt_total
+        distance = self.engine.get_distance(self.current_resource, selected_disaster)
+        travel_minutes = travel_minutes_from_distance(distance, float(self.current_resource.resource_type.specs["speed"]))
+        travel_score = 1.0 - min(max(travel_minutes / self._max_travel_minutes(), 0.0), 1.0)
+        remaining_score = min(max(selected_disaster.percent_remaining(), 0.0), 1.0)
 
-        # Reward when excavators and trucks are at the same site
-        for disaster in self.engine.disaster_store.items:
-            if isinstance(disaster, Landslide):
-                num_excavators = len(disaster.roster[ResourceType.EXCAVATOR])
-                num_trucks = len(disaster.roster[ResourceType.TRUCK])
+        partner_bonus = 0.5
+        for resource_type in selected_disaster.required_resources:
+            if resource_type == self.current_resource.resource_type:
+                continue
+            if len(selected_disaster.roster[resource_type]) == 0:
+                partner_bonus -= 0.75
 
-                # Bonus for having both types (coordination)
-                if num_excavators > 0 and num_trucks > 0:
-                    # More bonus when ratio is balanced (1:1 to 3:1 trucks:excavators)
-                    ratio = num_trucks / num_excavators if num_excavators > 0 else 0
-                    if 1 <= ratio <= 3:
-                        coordination_bonus = 2.0
-                    else:
-                        coordination_bonus = 1.0
-                    reward += coordination_bonus
-
-        return reward
-
-    def _get_total_resources(self) -> int:
-        """Get total number of resources in the simulation."""
-        if self.engine is None:
-            return 0
-
-        total = 0
-        # Count in depot and at disasters
-        for node in self.engine.resource_nodes:
-            if hasattr(node, "roster"):
-                for resources in node.roster.values():
-                    total += len(resources)
-
-        # Count idle resources
-        for resources in self.engine.idle_resources.roster.values():
-            total += len(resources)
-
-        # Count resources at disasters
-        for disaster in self.engine.disaster_store.items:
-            for resources in disaster.roster.values():
-                total += len(resources)
-
-        return max(total, 1)
-
-    @override
-    def reset(  # pyright: ignore[reportIncompatibleMethodOverride]
-        self, *, seed: int | None = None, options: dict[str, str] | None = None
-    ) -> tuple[ObsType, InfoType]:
-        """Resets the SimPy engine and runs until the first resource is ready."""
-        super().reset(seed=seed)
-        if seed is None:
-            seed = np.random.randint(0, 2**31 - 1)
-
-        gym_policy = Policy("gym_driver", lambda r, ds, env: ds[0])
-
-        self.engine = SimPySimulationEngine(
-            policy=gym_policy,
-            seed=seed,
-            scenario_config=self.scenario_config,
+        same_type_penalty = 0.25 * self._normalize_resource_count(
+            len(selected_disaster.roster[self.current_resource.resource_type]),
+            self.current_resource.resource_type,
         )
-        self.engine.initialize_world()
+        return 1.5 * travel_score + 1.0 * remaining_score + partner_bonus - same_type_penalty
 
-        self.current_resource = None
+    def _finalize_if_terminal(self) -> None:
+        if self.engine is None or self.engine.last_terminal_outcome is None:
+            return
         self.decision_needed = False
-        self.visible_disaster_mapping = {}
-        self._prev_dirt_total = None  # Initialize dirt tracking for rewards
+        self.current_resource = None
+        self.current_candidates = []
+        finalize_episode_log(
+            logger=self.logger,
+            engine=self.engine,
+            episode_seed=self._episode_seed,
+            scenario_name=self.scenario_name,
+            controller_name=self.controller_name,
+            invalid_action_count=self._invalid_action_count,
+        )
 
-        self.engine.run_in_gym(self.loop)
-
-        self._advance_to_decision()
-
-        return self._get_obs(), self._get_info()
-
-    def _advance_to_decision(self):
-        """Helper to loop SimPy events until the simulation flags that an agent action is needed."""
+    def _advance_to_decision_or_terminal(self) -> None:
         if self.engine is None:
             return
 
-        try:
-            while not self.decision_needed:
-                self.engine.env.step()
-        except EmptySchedule:
-            pass
+        while self.engine.pending_decision_resource is None and self.engine.last_terminal_outcome is None:
+            try:
+                self.engine.advance_to_next_event()
+            except EmptySchedule:
+                self.engine.last_terminal_outcome = self.engine.infer_terminal_outcome(schedule_exhausted=True)
+            except Exception as exc:
+                self.engine.last_terminal_error = repr(exc)
+                self.engine.last_terminal_outcome = SimPySimulationEngine.TERMINAL_FAIL_INVALID_STATE
+
+        if self.engine.last_terminal_outcome is not None:
+            self._finalize_if_terminal()
+            return
+
+        resource = self.engine.pending_decision_resource
+        if resource is None:
+            return
+
+        self.current_resource = resource
+        self.current_candidates = self._get_actionable_disasters(resource)
+        self.decision_needed = True
+        if not self.current_candidates:
+            self.engine.pending_decision_resource = None
+            self.engine.idle_resources.mark_resource_available(resource)
+            self.current_resource = None
+            self.decision_needed = False
+            self.engine._main_loop_process = self.engine.env.process(self.engine.loop())
+            self._advance_to_decision_or_terminal()
+
+    def _ensure_decision_or_terminal(self) -> None:
+        if self.engine is None:
+            return
+        attempts = 0
+        while self.engine.last_terminal_outcome is None and not self.decision_needed:
+            self._advance_to_decision_or_terminal()
+            attempts += 1
+            if self.engine.last_terminal_outcome is not None or self.decision_needed:
+                return
+            if attempts >= 8:
+                raise RuntimeError("Environment failed to reach a decision point or terminal state.")
 
     @override
-    def step(  # pyright: ignore[reportIncompatibleMethodOverride]
-        self, action: ActType
-    ) -> tuple[ObsType, float, bool, bool, InfoType]:
-        """Takes an action (disaster index) and advances SimPy to the next decision point."""
-        if self.engine is None:
-            raise RuntimeError("Environment must be reset before calling step().")
+    def reset(self, *, seed: int, options: dict[str, Any] | None = None) -> tuple[ObsType, InfoType]:  # pyright: ignore[reportIncompatibleMethodOverride]
+        super().reset()
+        self.gym_rng = SimulationRNG(seed)
 
-        self.current_action = int(action)
-        is_valid_action = self.current_action in self.visible_disaster_mapping
+        assert seed is not None
+
+        self._episode_seed = seed
+        gym_policy = Policy("gym_driver", lambda resource, disasters, env: None)
+        self.engine = SimPySimulationEngine(policy=gym_policy, seed=seed, scenario_config=self.scenario_config)
+        self.engine.initialize_world()
+        self.engine.stop_before_policy_decision = True
+        self.engine.run_in_gym(cast(Any, self.engine.loop))
+
         self.current_resource = None
+        self.current_candidates = []
         self.decision_needed = False
-
-        terminated = False  # This is when we are done
-        truncated = False  # This is when we can't make progress
-        reward = 0.0
-
-        last_time = self.engine.env.now
-
-        try:
-            # while something until the next decision is needed
-            while not self.decision_needed:
-                self.engine.env.step()
-        except EmptySchedule:
-            # CASE 1: The schedule is empty.
-            # Did we finish?
-            if (
-                self.engine.disasters_process
-                and self.engine.disasters_process.triggered
-                and len(self.engine.disaster_store.items) == 0
-            ):
-                terminated = True
-            else:
-                # We ran out of events but disasters remain -> FAILURE
-                truncated = True
-
-                # print(f"TRUNCATE DEBUG:")
-                # print(f"  Disasters remaining: {len(self.engine.disaster_store.items)}")
-                # roster = self.engine.idle_resources.roster
-                # print(f"  Idle excavators: {len(roster[ResourceType.EXCAVATOR])}")
-                # print(f"  Idle trucks: {len(roster[ResourceType.TRUCK])}")
-                # print(f"  Sim time: {self.engine.env.now}")
-
-        if terminated or truncated:
-            obs: ObsType = {
-                "current_resource_type": 0,
-                "visible_disasters": np.zeros((self.max_slots, self.num_disaster_features), dtype=np.float32),
-                "valid_actions": np.zeros(self.max_slots, dtype=np.int8),
-                "idle_trucks": (0.0,),
-                "idle_excavators": (0.0,),
-                "season": (0,),
-                "weather_factor": (0.0,),
-                "budget_utilization": (0.0,),
-                "avg_response_time": (0.0,),
-            }
-        else:
-            obs = self._get_obs()
-
-        info = self._get_info()
-
-        current_time = self.engine.env.now
-
-        # Calculate comprehensive reward
-        reward = self._calculate_reward(
-            last_time=last_time,
-            current_time=current_time,
-            terminated=terminated,
-            truncated=truncated,
-            is_valid_action=is_valid_action,
+        self._invalid_action_count = 0
+        self._invalid_action_remaps = 0
+        self._last_invalid_action = False
+        self._last_selected_action = None
+        self._last_requested_action = None
+        self._last_executed_action = None
+        self._last_action_kind = None
+        self._prev_training_objective_score = compute_training_objective_score(self._current_summary())
+        self.logger = DispatchEpisodeLogger(
+            controller_name=self.controller_name,
+            scenario_name=self.scenario_name,
+            seed=seed,
         )
 
-        return obs, float(reward), terminated, truncated, info
+        self._ensure_decision_or_terminal()
+        if self.engine.last_terminal_outcome is not None:
+            return self._zero_obs(), self._get_info()
+        return self._get_obs(), self._get_info()
 
-    def loop(self) -> Generator[Event, Resource, Never]:
-        """
-        The main orchestrator. It waits for ANY resource to become available,
-        then asks the policy where to send it.
-        """
+    @override
+    def step(self, action: ActType) -> tuple[ObsType, float, bool, bool, InfoType]:  # pyright: ignore[reportIncompatibleMethodOverride]
         if self.engine is None:
             raise RuntimeError("Environment must be reset before calling step().")
+        if not self.decision_needed or self.current_resource is None:
+            self._ensure_decision_or_terminal()
+            if not self.decision_needed or self.current_resource is None:
+                raise RuntimeError("Environment is not currently waiting for a dispatch decision.")
 
-        while True:
-            resource = yield self.engine.env.process(self.engine.idle_resources.get_any_resource())
-            yield self.engine.env.process(self.engine.disaster_store.wait_for_any())
+        requested_action = int(action)
+        selected_action = requested_action
+        action_kind, selected_disaster, invalid_action = self._resolve_action(selected_action)
+        if invalid_action:
+            selected_action, selected_disaster = self._remap_invalid_action()
+            if selected_disaster is not None:
+                action_kind = "REMAP_INVALID"
 
-            self.decision_needed = True
-            self.current_resource = resource
+        immediate_action_bonus = self._score_action(selected_disaster, invalid_action)
 
-            # Release control back to the main step loop
-            yield self.engine.env.timeout(0)
-            # Control returns when a disaster is selected and step is called again
+        if self.logger is not None:
+            self.logger.log_decision(
+                build_decision_log_record(
+                    engine=self.engine,
+                    current_resource=self.current_resource,
+                    current_candidate_ids=[disaster.id for disaster in self.current_candidates],
+                    valid_actions=self._valid_actions().astype(int).tolist(),
+                    action=selected_action,
+                    action_kind=action_kind,
+                    selected_disaster_id=selected_disaster.id if selected_disaster is not None else None,
+                    invalid_action=invalid_action,
+                )
+            )
 
-            # Parse current actions here
-            if self.current_action is None:
-                raise Exception("No action was taken.")
+        if invalid_action:
+            self._invalid_action_count += 1
+            if selected_disaster is not None:
+                self._invalid_action_remaps += 1
 
-            if self.current_action in self.visible_disaster_mapping:
-                disaster_id = self.visible_disaster_mapping[self.current_action]
-                target_disaster = None
-                for ls in list(self.engine.disaster_store.items):
-                    if ls.id == disaster_id:
-                        target_disaster = ls
-                        break
+        self._last_invalid_action = invalid_action
+        self._last_selected_action = selected_action
+        self._last_requested_action = requested_action
+        self._last_executed_action = selected_action
+        self._last_action_kind = action_kind
 
-                if target_disaster is not None:
-                    target_disaster.transfer_resource(resource)
+        resource = self.current_resource
+        self.decision_needed = False
+        self.current_resource = None
+        self.current_candidates = []
+        self.engine.pending_decision_resource = None
 
-            self.current_action = None
+        if selected_disaster is None:
+            self.engine.idle_resources.mark_resource_available(resource)
+        else:
+            if self.engine.branch_decision is None:
+                self.engine.branch_decision = selected_disaster.id
+            self.engine.decision_log.append(selected_disaster.id)
+            self.engine.decision_trace.append((resource.id, resource.resource_type.name, selected_disaster.id))
+            self.engine.decisions_made += 1
+            selected_disaster.transfer_resource(resource)
 
-    def update_scenario_config(self, new_config: ScenarioConfig):
-        """Update the scenario configuration for curriculum learning."""
-        self.scenario_config = new_config
-        # Note: This will take effect on next reset()
-        print(f"Environment scenario config updated to: {new_config}")
+        self.engine._main_loop_process = self.engine.env.process(self.engine.loop())
+        self._ensure_decision_or_terminal()
 
-    def update_max_visible_disasters(self, new_max: int):
-        """Update the maximum visible disasters for curriculum learning."""
-        self.max_slots = new_max
-        # Update action space
-        self.action_space = spaces.Discrete(self.max_slots)
-        # Update observation space
-        self.observation_space = cast(
-            spaces.Space[ObsType],
-            spaces.Dict(
-                {
-                    "current_resource_type": spaces.Discrete(self.num_resource_types),
-                    "visible_disasters": spaces.Box(
-                        low=0,
-                        high=1,
-                        shape=(self.max_slots, self.num_disaster_features),
-                        dtype=np.float32,
-                    ),
-                    "valid_actions": spaces.Box(low=0, high=1, shape=(self.max_slots,), dtype=np.int8),
-                    "idle_trucks": spaces.Box(low=0, high=1, shape=(1,), dtype=np.float32),
-                    "idle_excavators": spaces.Box(low=0, high=1, shape=(1,), dtype=np.float32),
-                }
-            ),
+        terminal_outcome = self.engine.last_terminal_outcome
+        terminated = terminal_outcome in {
+            SimPySimulationEngine.TERMINAL_SUCCESS,
+            SimPySimulationEngine.TERMINAL_FAIL_DEADLOCK,
+            SimPySimulationEngine.TERMINAL_FAIL_INVALID_STATE,
+        }
+        truncated = terminal_outcome == SimPySimulationEngine.TERMINAL_FAIL_TIMEOUT
+
+        obs = self._zero_obs() if (terminated or truncated) else self._get_obs()
+        reward, reward_components = self._calculate_reward(
+            terminal_outcome=terminal_outcome,
+            invalid_action=invalid_action,
+            immediate_action_bonus=immediate_action_bonus,
         )
-        print(f"Environment max_visible_disasters updated to: {new_max}")
+        info = self._get_info()
+        info["reward_components"] = reward_components
+        return obs, reward, terminated, truncated, info
+
+    def update_scenario_config(self, new_config: ScenarioConfig) -> None:
+        self.scenario_config = new_config

@@ -10,7 +10,10 @@ import numpy.typing as npt
 from simpy.core import EmptySchedule
 import torch
 from torch import nn
+from torch.nn.modules.container import Sequential
 from torch.utils.data import DataLoader, TensorDataset
+import matplotlib.pyplot as plt
+from sklearn.model_selection import train_test_split
 
 from SimPyTest.engine import SimPySimulationEngine
 from SimPyTest.gym import DisasterResponseGym, ObsType
@@ -84,7 +87,42 @@ class DemonstrationBatch:
 
     @classmethod
     def load(cls, path: str | Path) -> "DemonstrationBatch":
-        with np.load(Path(path), allow_pickle=False) as data:
+        with np.load(Path(path), allow_pickle=True) as data:
+            # `metadata_json` may be stored as a numpy array of strings (possibly
+            # with more than one element). Normalize to a single JSON string
+            # before parsing.
+            meta_field = data["metadata_json"]
+            metadata = None
+            # If metadata is stored as a numpy array, attempt to parse each
+            # element as JSON. Fallback to joining elements if necessary and
+            # raise a descriptive error if parsing still fails.
+            if isinstance(meta_field, np.ndarray):
+                if meta_field.size == 1:
+                    meta_str = str(meta_field.item())
+                    try:
+                        metadata = json.loads(meta_str)
+                    except json.JSONDecodeError:
+                        pass
+                else:
+                    for elem in meta_field.flat:
+                        try:
+                            metadata = json.loads(str(elem))
+                            break
+                        except Exception:
+                            continue
+                    if metadata is None:
+                        joined = "".join(str(x) for x in meta_field.tolist())
+                        try:
+                            metadata = json.loads(joined)
+                        except Exception as exc:
+                            raise ValueError(
+                                f"Unable to parse metadata_json from array with shape {meta_field.shape}; sample={repr(meta_field.tolist()[:5])}"
+                            ) from exc
+            else:
+                try:
+                    metadata = json.loads(str(meta_field))
+                except Exception as exc:
+                    raise ValueError("Unable to parse metadata_json field") from exc
             return cls(
                 current_resource=np.asarray(data["current_resource"], dtype=np.float32),
                 global_state=np.asarray(data["global_state"], dtype=np.float32),
@@ -92,7 +130,7 @@ class DemonstrationBatch:
                 observations=np.asarray(data["observations"], dtype=np.float32),
                 actions=np.asarray(data["actions"], dtype=np.int64),
                 action_masks=np.asarray(data["action_masks"], dtype=np.float32),
-                metadata=json.loads(str(data["metadata_json"].item())),
+                metadata=metadata,
             )
 
 
@@ -150,47 +188,28 @@ class DispatchScoringConfig:
     dropout: float = 0.1
 
 
-def _build_mlp(input_dim: int, hidden_dim: int, depth: int, dropout: float, output_dim: int) -> nn.Sequential:
-    layers: list[nn.Module] = []
-    next_dim = input_dim
-    for _ in range(depth):
-        layers.append(nn.Linear(next_dim, hidden_dim))
-        layers.append(nn.ReLU())
-        if dropout > 0.0:
-            layers.append(nn.Dropout(dropout))
-        next_dim = hidden_dim
-    layers.append(nn.Linear(next_dim, output_dim))
-    return nn.Sequential(*layers)
-
-
-def masked_mean(embeddings: torch.Tensor, valid_actions: torch.Tensor, eps: float = 1e-8) -> torch.Tensor:
-    mask = valid_actions.unsqueeze(-1).to(dtype=embeddings.dtype)
-    summed = (embeddings * mask).sum(dim=1)
-    denom = mask.sum(dim=1).clamp_min(eps)
-    return summed / denom
-
-
 class DispatchScoringModel(nn.Module):
     def __init__(self, config: DispatchScoringConfig):
         super().__init__()
-        r_dim = config.current_dim + config.global_dim
-        d_dim = config.candidate_dim
-
-        self.shared_encoder = _build_mlp(
-            r_dim + d_dim,
-            config.hidden_dim,
-            config.depth,
-            config.dropout,
-            config.hidden_dim,
+        # deepset
+        context_in = config.current_dim + config.global_dim + config.candidate_dim
+        self.phi = nn.Sequential(
+            nn.Linear(context_in, config.hidden_dim),
+            nn.ReLU(),
+            nn.Linear(config.hidden_dim, config.hidden_dim),
+            nn.ReLU(),
         )
 
-        self.candidate_head = _build_mlp(
-            r_dim + d_dim + config.hidden_dim,
-            config.hidden_dim,
-            config.depth,
-            config.dropout,
-            1,
-        )
+
+        candidate_layers: list[nn.Module] = []
+        candidate_in = config.hidden_dim + config.candidate_dim
+        for _ in range(config.depth):
+            candidate_layers.append(nn.Linear(candidate_in, config.hidden_dim))
+            candidate_layers.append(nn.ReLU())
+            candidate_layers.append(nn.Dropout(config.dropout))
+            candidate_in = config.hidden_dim
+        candidate_layers.append(nn.Linear(candidate_in, 1))
+        self.candidate_head: Sequential = nn.Sequential(*candidate_layers)
 
     @override
     def forward(
@@ -198,65 +217,36 @@ class DispatchScoringModel(nn.Module):
         current_resource: torch.Tensor,
         global_state: torch.Tensor,
         candidate_disasters: torch.Tensor,
-        valid_actions: torch.Tensor,
+        candidate_mask: torch.Tensor,
     ) -> torch.Tensor:
-        B, N, _ = candidate_disasters.shape
-        shared_state = torch.cat((current_resource, global_state), dim=1)
+        # Input shapes:
+        # current_resource:   [B, current_dim]
+        # global_state:       [B, global_dim]
+        # candidate_disasters:[B, max_visible_disasters, candidate_dim]
+        # candidate_mask:     [B, max_visible_disasters]
+        # Example: [32, 3], [32, 4], [32, 5, 6]
 
-        r_expand = shared_state.unsqueeze(1).expand(B, N, shared_state.shape[-1])
-        x = torch.cat([r_expand, candidate_disasters], dim=-1)  # [B,N,r+d]
-        E = self.shared_encoder(x)  # [B,N,h]
-        z = masked_mean(E, valid_actions)  # [B,h]
-        z_expand = z.unsqueeze(1).expand(B, N, z.shape[-1])
+        context = torch.cat((current_resource, global_state), dim=1)
+        expanded_context = context.unsqueeze(1).expand(-1, candidate_disasters.shape[1], -1)
 
-        x2 = torch.cat([r_expand, candidate_disasters, z_expand], dim=-1)
-        s = self.candidate_head(x2).squeeze(-1)  # [B,N] logits
+        phi_inputs = torch.cat((expanded_context, candidate_disasters), dim=2)
+        phi = self.phi(phi_inputs)
 
-        s = s.masked_fill(valid_actions <= 0, -1e9)
-        return s
+        mask = candidate_mask.to(phi.dtype).unsqueeze(-1)
+        masked_phi = phi * mask
+        valid_count = mask.sum(dim=1).clamp(min=1.0)
+        set_representation = masked_phi.sum(dim=1) / valid_count
 
+        repeated_set = set_representation.unsqueeze(1).expand(-1, candidate_disasters.shape[1], -1)
+        candidate_inputs = torch.cat((repeated_set, candidate_disasters), dim=2)
 
-class DispatchValueModel(nn.Module):
-    def __init__(self, config: DispatchScoringConfig):
-        super().__init__()
-        r_dim = config.current_dim + config.global_dim
-        d_dim = config.candidate_dim
+        logits = self.candidate_head(candidate_inputs).squeeze(-1)
 
-        self.shared_encoder = _build_mlp(
-            r_dim + d_dim,
-            config.hidden_dim,
-            config.depth,
-            config.dropout,
-            config.hidden_dim,
-        )
+        # avoid padding
+        mask = candidate_mask.to(torch.bool)
+        masked_logits = logits.masked_fill(~mask, float("-inf"))
+        return masked_logits
 
-        self.value_head = _build_mlp(
-            r_dim + config.hidden_dim,
-            config.hidden_dim,
-            config.depth,
-            config.dropout,
-            1,
-        )
-
-    @override
-    def forward(
-        self,
-        current_resource: torch.Tensor,
-        global_state: torch.Tensor,
-        candidate_disasters: torch.Tensor,
-        valid_actions: torch.Tensor,
-    ) -> torch.Tensor:
-        B, N, _ = candidate_disasters.shape
-        shared_state = torch.cat((current_resource, global_state), dim=1)
-
-        r_expand = shared_state.unsqueeze(1).expand(B, N, shared_state.shape[-1])
-        x = torch.cat([r_expand, candidate_disasters], dim=-1)  # [B,N,r+d]
-        E = self.shared_encoder(x)  # [B,N,h]
-        z = masked_mean(E, valid_actions)  # [B,h]
-
-        x2 = torch.cat([current_resource, global_state, z], dim=-1)
-        s = self.value_head(x2).squeeze(-1)  # [B,N] logits
-        return s
 
 
 @dataclass
@@ -272,8 +262,8 @@ class TrainedDispatchPolicy:
             current_resource = torch.from_numpy(observation["current_resource"]).float().unsqueeze(0).to(self.device)
             global_state = torch.from_numpy(observation["global_state"]).float().unsqueeze(0).to(self.device)
             candidate_disasters = torch.from_numpy(observation["candidate_disasters"]).float().unsqueeze(0).to(self.device)
-            action_mask = torch.from_numpy(valid_actions).float().unsqueeze(0).to(self.device)
-            logits = self.model(current_resource, global_state, candidate_disasters, action_mask).squeeze(0).cpu().numpy()
+            candidate_mask = torch.from_numpy(valid_actions).float().unsqueeze(0).to(self.device)
+            logits = self.model(current_resource, global_state, candidate_disasters, candidate_mask).squeeze(0).cpu().numpy()
 
         masked = np.where(valid_actions > 0, logits, -1e9)
         if np.all(valid_actions <= 0):
@@ -288,9 +278,11 @@ class TrainedDispatchPolicy:
     def save(self, output_dir: str | Path) -> None:
         path = Path(output_dir)
         path.mkdir(parents=True, exist_ok=True)
+        # If model wrapped in DataParallel, save underlying module's state_dict
+        state_dict = self.model.module.state_dict() if hasattr(self.model, "module") else self.model.state_dict()
         torch.save(
             {
-                "state_dict": self.model.state_dict(),
+                "state_dict": state_dict,
                 "metadata": self.metadata,
                 "max_visible_disasters": self.max_visible_disasters,
             },
@@ -313,7 +305,13 @@ class TrainedDispatchPolicy:
             dropout=float(metadata["dropout"]),
         )
         model = DispatchScoringModel(config)
-        model.load_state_dict(payload["state_dict"])
+        state_dict = payload["state_dict"]
+        # tolerate state_dicts saved from DataParallel (keys prefixed with 'module.')
+        try:
+            model.load_state_dict(state_dict)
+        except RuntimeError:
+            stripped = {k.replace("module.", ""): v for k, v in state_dict.items()}
+            model.load_state_dict(stripped)
         model.to(device)
         model.eval()
         return cls(
@@ -458,6 +456,9 @@ def collect_policy_demonstrations(
                 obs, reward, terminated, truncated, info = env.step(action)
                 steps += 1
 
+                if info["is_success"] or info["is_failure"] or info["is_truncated"]:
+                    print(f"Terminal outcome for teacher={teacher_policy.name} seed={seed} steps={steps}: objective_score={info['objective_score']} (success={info['is_success']})")
+
                 if teacher_policy.name == "tournament":
                     clear_tournament_cache()
                     reset_tournament_profile_stats()
@@ -542,6 +543,41 @@ def _split_indices(size: int, validation_fraction: float, seed: int) -> tuple[np
     return train_indices.astype(np.int64), val_indices.astype(np.int64)
 
 
+
+
+
+def _plot_loss_accuracy(
+    epochs: list[int],
+    losses: list[float],
+    accuracies: list[float],
+    save_path: Path,
+    title: str,
+) -> None:
+    if not epochs:
+        return
+    save_path.parent.mkdir(parents=True, exist_ok=True)
+    fig, loss_axis = plt.subplots(figsize=(8, 4.5))
+    accuracy_axis = loss_axis.twinx()
+
+    loss_line = loss_axis.plot(epochs, losses, marker="o", linestyle="-", color="tab:red", label="Loss")
+    accuracy_line = accuracy_axis.plot(epochs, accuracies, marker="o", linestyle="-", color="tab:blue", label="Accuracy")
+
+    loss_axis.set_title(title)
+    loss_axis.set_xlabel("Epoch")
+    loss_axis.set_ylabel("Loss", color="tab:red")
+    accuracy_axis.set_ylabel("Accuracy", color="tab:blue")
+    accuracy_axis.set_ylim(0.0, 1.0)
+    loss_axis.grid(True, linestyle="--", alpha=0.4)
+
+    lines = loss_line + accuracy_line
+    labels = [line.get_label() for line in lines]
+    loss_axis.legend(lines, labels, loc="best")
+
+    fig.tight_layout()
+    fig.savefig(save_path, dpi=150)
+    plt.close(fig)
+
+
 def train_behavior_cloning(
     *,
     dataset: DemonstrationBatch,
@@ -550,13 +586,16 @@ def train_behavior_cloning(
     epochs: int = 20,
     batch_size: int = 256,
     learning_rate: float = 1e-3,
-    weight_decay: float = 1e-4,
-    validation_fraction: float = 0.1,
+    weight_decay: float = 1e-3,
+    validation_fraction: float = 0.2,
+    test_fraction: float = 0.01,
     hidden_dim: int = 256,
     depth: int = 3,
     dropout: float = 0.1,
     device: str = "cpu",
     model_type: str = "candidate_scorer",
+    validation_every_n_epochs: int = 20,
+    history_plot_path: str | Path | None = None,
 ) -> tuple[TrainedDispatchPolicy, TrainingHistory]:
     output_dim = int(max_visible_disasters)
     current_dim = int(dataset.current_resource.shape[1])
@@ -574,8 +613,39 @@ def train_behavior_cloning(
         dropout=dropout,
     )
     model = DispatchScoringModel(config).to(device)
+    # If CUDA requested and multiple GPUs are available, use DataParallel
+    try:
+        if isinstance(device, str) and device.startswith("cuda") and torch.cuda.device_count() > 1:
+            device_ids = list(range(torch.cuda.device_count()))
+            model = nn.DataParallel(model, device_ids=device_ids)
+            model.to(device)
+    except Exception:
+        # ignore and continue with single-device model
+        pass
 
-    train_indices, val_indices = _split_indices(len(dataset.actions), validation_fraction, seed)
+    # Use sklearn to create stratified train/val/test splits when possible.
+    indices = np.arange(len(dataset.actions))
+    total_val_test = validation_fraction + test_fraction
+    train_size = max(0.0, 1.0 - total_val_test)
+    stratify_arr = dataset.actions if hasattr(dataset, "actions") else None
+    train_indices, temp_indices = train_test_split(
+        indices,
+        train_size=train_size,
+        random_state=seed,
+        stratify=stratify_arr,
+    )
+
+    # split temp into val/test according to their relative sizes
+    test_rel = test_fraction / total_val_test if total_val_test > 0 else 0.5
+    stratify_temp = dataset.actions[temp_indices]
+    val_indices, test_indices = train_test_split(
+        temp_indices,
+        test_size=test_rel,
+        random_state=seed + 1,
+        stratify=stratify_temp,
+    )
+
+
     x = torch.from_numpy(dataset.observations)
     x_current = torch.from_numpy(dataset.current_resource)
     x_global = torch.from_numpy(dataset.global_state)
@@ -608,11 +678,29 @@ def train_behavior_cloning(
         shuffle=False,
     )
 
+    test_loader = DataLoader(
+        TensorDataset(
+            x[test_indices],
+            x_current[test_indices],
+            x_global[test_indices],
+            x_candidates[test_indices],
+            y[test_indices],
+            mask[test_indices],
+        ),
+        batch_size=batch_size,
+        shuffle=False,
+    )
+
     class_counts = np.bincount(dataset.actions, minlength=output_dim).astype(np.float32)
     class_weights = class_counts.sum() / np.maximum(class_counts, 1.0)
     criterion = nn.CrossEntropyLoss(weight=torch.from_numpy(class_weights).float().to(device))
     optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
     history_rows: list[dict[str, float]] = []
+    validation_epochs: list[int] = []
+    validation_losses: list[float] = []
+    validation_accuracies: list[float] = []
+    last_val_loss = 0.0
+    last_val_accuracy = 0.0
     progress = _ConsoleProgressBar(total=epochs, label="Training epochs")
 
     for epoch in range(epochs):
@@ -644,36 +732,44 @@ def train_behavior_cloning(
             train_correct += int((preds == batch_y).sum().item())
             train_total += int(batch_y.shape[0])
 
-        model.eval()
-        val_loss = 0.0
-        val_correct = 0
-        val_total = 0
-        with torch.no_grad():
-            for batch_x, batch_current, batch_global, batch_candidates, batch_y, batch_mask in val_loader:
-                batch_x = batch_x.to(device)
-                batch_current = batch_current.to(device)
-                batch_global = batch_global.to(device)
-                batch_candidates = batch_candidates.to(device)
-                batch_y = batch_y.to(device)
-                batch_mask = batch_mask.to(device)
-                if model_type == "candidate_scorer":
-                    logits = model(batch_current, batch_global, batch_candidates, batch_mask)
-                else:
-                    logits = model(batch_x)
-                masked_logits = torch.where(batch_mask > 0, logits, torch.full_like(logits, -1e9))
-                loss = criterion(masked_logits, batch_y)
-                val_loss += float(loss.item()) * int(batch_y.shape[0])
-                preds = torch.argmax(masked_logits, dim=1)
-                val_correct += int((preds == batch_y).sum().item())
-                val_total += int(batch_y.shape[0])
+        should_validate = (epoch == 0) or ((epoch + 1) % validation_every_n_epochs == 0) or (epoch == epochs - 1)
+        if should_validate:
+            model.eval()
+            val_loss = 0.0
+            val_correct = 0
+            val_total = 0
+            with torch.no_grad():
+                for batch_x, batch_current, batch_global, batch_candidates, batch_y, batch_mask in val_loader:
+                    batch_x = batch_x.to(device)
+                    batch_current = batch_current.to(device)
+                    batch_global = batch_global.to(device)
+                    batch_candidates = batch_candidates.to(device)
+                    batch_y = batch_y.to(device)
+                    batch_mask = batch_mask.to(device)
+                    if model_type == "candidate_scorer":
+                        logits = model(batch_current, batch_global, batch_candidates, batch_mask)
+                    else:
+                        logits = model(batch_x)
+                    masked_logits = torch.where(batch_mask > 0, logits, torch.full_like(logits, -1e9))
+                    loss = criterion(masked_logits, batch_y)
+                    val_loss += float(loss.item()) * int(batch_y.shape[0])
+                    preds = torch.argmax(masked_logits, dim=1)
+                    val_correct += int((preds == batch_y).sum().item())
+                    val_total += int(batch_y.shape[0])
+
+            last_val_loss = val_loss / max(val_total, 1)
+            last_val_accuracy = val_correct / max(val_total, 1)
+            validation_epochs.append(epoch + 1)
+            validation_losses.append(last_val_loss)
+            validation_accuracies.append(last_val_accuracy)
 
         history_rows.append(
             {
                 "epoch": float(epoch + 1),
                 "train_loss": train_loss / max(train_total, 1),
                 "train_accuracy": train_correct / max(train_total, 1),
-                "val_loss": val_loss / max(val_total, 1),
-                "val_accuracy": val_correct / max(val_total, 1),
+                "val_loss": last_val_loss,
+                "val_accuracy": last_val_accuracy,
             }
         )
         latest = history_rows[-1]
@@ -699,6 +795,54 @@ def train_behavior_cloning(
         "final_train_accuracy": history_rows[-1]["train_accuracy"] if history_rows else 0.0,
         "final_val_accuracy": history_rows[-1]["val_accuracy"] if history_rows else 0.0,
     }
+    if history_plot_path is not None:
+        validation_plot_path = Path(history_plot_path)
+        train_plot_path = validation_plot_path.with_name("training_metrics.png")
+        train_epochs = [int(row["epoch"]) for row in history_rows]
+        _plot_loss_accuracy(
+            validation_epochs,
+            validation_losses,
+            validation_accuracies,
+            validation_plot_path,
+            "Validation Loss and Accuracy",
+        )
+        _plot_loss_accuracy(
+            train_epochs,
+            [row["train_loss"] for row in history_rows],
+            [row["train_accuracy"] for row in history_rows],
+            train_plot_path,
+            "Training Loss and Accuracy",
+        )
+    # Evaluate on held-out test set
+    test_loss = 0.0
+    test_correct = 0
+    test_total = 0
+    model.eval()
+    with torch.no_grad():
+        for batch_x, batch_current, batch_global, batch_candidates, batch_y, batch_mask in test_loader:
+            batch_x = batch_x.to(device)
+            batch_current = batch_current.to(device)
+            batch_global = batch_global.to(device)
+            batch_candidates = batch_candidates.to(device)
+            batch_y = batch_y.to(device)
+            batch_mask = batch_mask.to(device)
+            if model_type == "candidate_scorer":
+                logits = model(batch_current, batch_global, batch_candidates, batch_mask)
+            else:
+                logits = model(batch_x)
+            masked_logits = torch.where(batch_mask > 0, logits, torch.full_like(logits, -1e9))
+            loss = criterion(masked_logits, batch_y)
+            test_loss += float(loss.item()) * int(batch_y.shape[0])
+            preds = torch.argmax(masked_logits, dim=1)
+            test_correct += int((preds == batch_y).sum().item())
+            test_total += int(batch_y.shape[0])
+
+    final_test_loss = test_loss / max(test_total, 1)
+    final_test_accuracy = test_correct / max(test_total, 1)
+    metadata["final_test_loss"] = final_test_loss
+    metadata["final_test_accuracy"] = final_test_accuracy
+    print(f"Test set results: loss={final_test_loss:.4f} accuracy={final_test_accuracy:.3f} (n={test_total})")
+
     trained = TrainedDispatchPolicy(
         model=model.eval(),
         device=device,

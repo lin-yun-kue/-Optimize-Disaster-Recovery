@@ -8,8 +8,8 @@ from typing import cast
 
 import torch
 
-from mlp.generate_dispatch_training_data import collect_demonstration_dataset
-from mlp.ml_dispatch import DemonstrationBatch, append_demonstration_batches, train_behavior_cloning, write_json
+from .generate_dispatch_training_data import collect_demonstration_dataset
+from .ml_dispatch import DemonstrationBatch, append_demonstration_batches, train_behavior_cloning, write_json
 
 
 class MyNamespace(Namespace):
@@ -120,6 +120,7 @@ if __name__ == "__main__":
         depth=args.depth,
         dropout=args.dropout,
         device=device,
+        history_plot_path=run_dir / "validation_metrics.png",
     )
     policy.metadata.update(
         {

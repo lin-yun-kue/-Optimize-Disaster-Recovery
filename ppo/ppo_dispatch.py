@@ -25,7 +25,7 @@ from SimPyTest.evaluation import KPIBundle, compute_kpi_bundle
 from SimPyTest.gym import CURRENT_RESOURCE_FEATURES, DISASTER_FEATURES, GLOBAL_STATE_FEATURES, DisasterResponseGym, InfoType, ObsType
 from SimPyTest.scenario_types import ScenarioConfig, SeasonalDisasterConfig
 from SimPyTest.simulation import Disaster
-from scripts.training.mlp.ml_dispatch import DispatchScoringConfig, DispatchScoringModel, DispatchValueModel
+from mlp.ml_dispatch import DispatchScoringConfig, DispatchScoringModel, DispatchValueModel
 import random
 
 PPO_CHECKPOINT_VERSION = "v4"

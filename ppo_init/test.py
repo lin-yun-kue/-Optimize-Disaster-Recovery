@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 import matplotlib.pyplot as plt
 
-from scripts.training.ppo_init.train_critic import PPOConfig, train
+from ppo_init.train_critic import PPOConfig, train
 
 def load_metrics(run_dir: Path) -> dict[str, Any]:
     metrics_path = run_dir / "training_metrics.json"

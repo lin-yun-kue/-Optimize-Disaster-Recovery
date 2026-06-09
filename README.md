@@ -52,19 +52,19 @@ python benchmark.py --suite quick
 **Train the imitation model**
 
 ```bash
-python -m scripts.training.mlp.train_dispatch_ml
+python -m mlp.train_dispatch_ml
 ```
 
 **Train PPO from scratch**
 
 ```bash
-python -m scripts.training.ppo.train_ppo
+python -m ppo.train_ppo
 ```
 
 **Train PPO initialized from imitation model**
 
 ```bash
-python -m scripts.training.ppo_init.train_critic
+python -m ppo_init.train_critic
 ```
 
 **GIS setup.** Road network data for Clatsop County is expected at `maps/tl_2024_41007_roads/tl_2024_41007_roads.shp`. Download the TIGER/Line shapefile for Clatsop County, OR from the [US Census Bureau](https://www.census.gov/cgi-bin/geo/shapefiles/index.php) and place it at that path. GIS can be disabled for all runs by omitting the `--gis` flag or passing `gis_config=None` in the scenario config.

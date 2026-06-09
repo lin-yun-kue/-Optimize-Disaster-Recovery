@@ -206,7 +206,7 @@ def run_policy_episode(policy: Policy, seed: int, scenario_config: ScenarioConfi
 
 
 def run_ppo_episode(model: object, seed: int, scenario_name: str, scenario_config: ScenarioConfig) -> EpisodeRecord:
-    from scripts.training.ppo.ppo_dispatch import run_policy_episode as run_ppo_policy_episode
+    from ppo.ppo_dispatch import run_policy_episode as run_ppo_policy_episode
 
     episode: PPOEpisodeResult = run_ppo_policy_episode(model, seed, True, "ppo_benchmark", scenario_name, scenario_config)
     return {
@@ -380,7 +380,7 @@ def run_benchmark_single(
     ppo_spec = load_ppo_model_spec(ppo_model_path)
     dispatch_spec = load_dispatch_model_spec(mlp_model_path)
     if ppo_spec is not None or dispatch_spec is not None:
-        from scripts.training.ppo.ppo_dispatch import load_model, select_device
+        from ppo.ppo_dispatch import load_model, select_device
 
         device = select_device()
         ppo_model = load_model(ppo_spec["path"], device) if ppo_spec is not None else None
@@ -388,7 +388,7 @@ def run_benchmark_single(
         device = None
         ppo_model = None
     if dispatch_spec is not None and device is not None:
-        from scripts.training.mlp.ml_dispatch import TrainedDispatchPolicy
+        from mlp.ml_dispatch import TrainedDispatchPolicy
 
         dispatch_model = TrainedDispatchPolicy.load(dispatch_spec["path"], device=device)
     else:

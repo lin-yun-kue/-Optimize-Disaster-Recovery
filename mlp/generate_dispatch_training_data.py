@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-# python -m scripts.training.mlp.generate_dispatch_training_data --difficulties clatsop_winter_ops --teachers tournament --train-seeds 50 --name clatsop_winter
+# python -m mlp.generate_dispatch_training_data --difficulties clatsop_winter_ops --teachers tournament --train-seeds 50 --name clatsop_winter
 
 from argparse import Namespace
 import argparse
@@ -102,4 +102,4 @@ if __name__ == "__main__":
     write_json(output_dir / "demonstrations_meta.json", dataset.metadata)
 
     print(f"Saved demonstration dataset to {dataset_path}")
-    print(f"Train using: `python -m scripts.training.mlp.train_dispatch_ml --dataset experiment_results/dispatch_datasets/{name}/demonstrations.npz`")
+    print(f"Train using: `python -m mlp.train_dispatch_ml --dataset experiment_results/dispatch_datasets/{name}/demonstrations.npz`")

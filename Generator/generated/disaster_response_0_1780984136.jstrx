@@ -1,0 +1,207 @@
+GENTYPE Default;
+
+QUEUE AAAStartTrigger Default;
+QUEUE ResourceQueue Default;
+QUEUE ReturnQueue Default;
+COMBI DispatchDecisio;
+QUEUE DispatchDecis_1 Default;
+QUEUE DispatchDecis_2 Default;
+QUEUE DispatchDecis_3 Default;
+QUEUE DispatchDecis_4 Default;
+QUEUE DispatchDecis_5 Default;
+COMBI Work_1;
+COMBI Work_2;
+COMBI Work_3;
+
+LINK Link1 ResourceQueue DispatchDecisio;
+LINK Link2 DispatchDecisio ReturnQueue;
+LINK Link3 DispatchDecis_1 Work_1;
+LINK Link4 Work_1 ReturnQueue;
+LINK Link5 DispatchDecis_2 Work_2;
+LINK Link6 Work_2 ReturnQueue;
+LINK Link7 DispatchDecis_3 Work_3;
+LINK Link8 Work_3 ReturnQueue;
+
+EZINITIALCONTENT AAAStartTrigger 1;
+EZINITIALCONTENT ResourceQueue 8;
+EZINITIALCONTENT ReturnQueue 0;
+PRIORITY DispatchDecisio 0;
+SEMAPHORE DispatchDecisio 1;
+DURATION DispatchDecisio 0;
+EZINITIALCONTENT DispatchDecis_1 0;
+EZINITIALCONTENT DispatchDecis_2 0;
+EZINITIALCONTENT DispatchDecis_3 0;
+EZINITIALCONTENT DispatchDecis_4 0;
+EZINITIALCONTENT DispatchDecis_5 0;
+PRIORITY Work_1 0;
+SEMAPHORE Work_1 1;
+DURATION Work_1 1000.0;
+PRIORITY Work_2 0;
+SEMAPHORE Work_2 1;
+DURATION Work_2 1500.0;
+PRIORITY Work_3 0;
+SEMAPHORE Work_3 1;
+DURATION Work_3 2000.0;
+
+
+ENOUGH Link1 CurCount>0.0;
+DRAWUNTIL Link1 nDraws;
+DRAWAMT Link1 1;
+DRAWORDER Link1 1;
+DRAWWHERE Link1 1;
+RELEASEAMT Link1 1;
+RELEASEUNTIL Link1 0;
+RELEASEORDER Link1 1;
+RELEASEWHERE Link1 1;
+STRENGTH Link1 1;
+
+
+ENOUGH Link2 1;
+DRAWUNTIL Link2 nDraws;
+DRAWAMT Link2 1;
+DRAWORDER Link2 1;
+DRAWWHERE Link2 1;
+RELEASEAMT Link2 1;
+RELEASEUNTIL Link2 0;
+RELEASEORDER Link2 1;
+RELEASEWHERE Link2 1;
+STRENGTH Link2 1;
+
+
+ENOUGH Link3 CurCount>0.0;
+DRAWUNTIL Link3 nDraws;
+DRAWAMT Link3 1;
+DRAWORDER Link3 1;
+DRAWWHERE Link3 1;
+RELEASEAMT Link3 1;
+RELEASEUNTIL Link3 0;
+RELEASEORDER Link3 1;
+RELEASEWHERE Link3 1;
+STRENGTH Link3 1;
+
+
+ENOUGH Link4 1;
+DRAWUNTIL Link4 nDraws;
+DRAWAMT Link4 1;
+DRAWORDER Link4 1;
+DRAWWHERE Link4 1;
+RELEASEAMT Link4 1;
+RELEASEUNTIL Link4 0;
+RELEASEORDER Link4 1;
+RELEASEWHERE Link4 1;
+STRENGTH Link4 1;
+
+
+ENOUGH Link5 CurCount>0.0;
+DRAWUNTIL Link5 nDraws;
+DRAWAMT Link5 1;
+DRAWORDER Link5 1;
+DRAWWHERE Link5 1;
+RELEASEAMT Link5 1;
+RELEASEUNTIL Link5 0;
+RELEASEORDER Link5 1;
+RELEASEWHERE Link5 1;
+STRENGTH Link5 1;
+
+
+ENOUGH Link6 1;
+DRAWUNTIL Link6 nDraws;
+DRAWAMT Link6 1;
+DRAWORDER Link6 1;
+DRAWWHERE Link6 1;
+RELEASEAMT Link6 1;
+RELEASEUNTIL Link6 0;
+RELEASEORDER Link6 1;
+RELEASEWHERE Link6 1;
+STRENGTH Link6 1;
+
+
+ENOUGH Link7 CurCount>0.0;
+DRAWUNTIL Link7 nDraws;
+DRAWAMT Link7 1;
+DRAWORDER Link7 1;
+DRAWWHERE Link7 1;
+RELEASEAMT Link7 1;
+RELEASEUNTIL Link7 0;
+RELEASEORDER Link7 1;
+RELEASEWHERE Link7 1;
+STRENGTH Link7 1;
+
+
+ENOUGH Link8 1;
+DRAWUNTIL Link8 nDraws;
+DRAWAMT Link8 1;
+DRAWORDER Link8 1;
+DRAWWHERE Link8 1;
+RELEASEAMT Link8 1;
+RELEASEUNTIL Link8 0;
+RELEASEORDER Link8 1;
+RELEASEWHERE Link8 1;
+STRENGTH Link8 1;
+
+
+RANDOMSEED true;
+SEED 0;
+STREAMS 0;
+NUMRUNS 1;
+ENDCOND SimTime>=600000;
+
+/<CODE>
+ONENTRY AAAStartTrigger SAVEVALUE _active_disasters 3.0;
+ONENTRY AAAStartTrigger SAVEVALUE _season_idx 0.0;
+ONENTRY AAAStartTrigger SAVEVALUE _num_trucks 5.0;
+ONENTRY AAAStartTrigger SAVEVALUE _num_excavators 3.0;
+ONENTRY AAAStartTrigger SAVEVALUE _dispatch_choice 0.0;
+ONENTRY AAAStartTrigger SAVEVALUE Dis_1_id 1.0;
+ONENTRY AAAStartTrigger SAVEVALUE Dis_1_type 0.0;
+ONENTRY AAAStartTrigger SAVEVALUE Dis_1_scale 100.0;
+ONENTRY AAAStartTrigger SAVEVALUE Dis_1_pct_remaining 1.0;
+ONENTRY AAAStartTrigger SAVEVALUE Dis_1_age 0.0;
+ONENTRY AAAStartTrigger SAVEVALUE Dis_1_x 0.3;
+ONENTRY AAAStartTrigger SAVEVALUE Dis_1_y 0.4;
+ONENTRY AAAStartTrigger SAVEVALUE Dis_2_id 2.0;
+ONENTRY AAAStartTrigger SAVEVALUE Dis_2_type 0.0;
+ONENTRY AAAStartTrigger SAVEVALUE Dis_2_scale 150.0;
+ONENTRY AAAStartTrigger SAVEVALUE Dis_2_pct_remaining 1.0;
+ONENTRY AAAStartTrigger SAVEVALUE Dis_2_age 0.0;
+ONENTRY AAAStartTrigger SAVEVALUE Dis_2_x 0.44999999999999996;
+ONENTRY AAAStartTrigger SAVEVALUE Dis_2_y 0.5;
+ONENTRY AAAStartTrigger SAVEVALUE Dis_3_id 3.0;
+ONENTRY AAAStartTrigger SAVEVALUE Dis_3_type 0.0;
+ONENTRY AAAStartTrigger SAVEVALUE Dis_3_scale 200.0;
+ONENTRY AAAStartTrigger SAVEVALUE Dis_3_pct_remaining 1.0;
+ONENTRY AAAStartTrigger SAVEVALUE Dis_3_age 0.0;
+ONENTRY AAAStartTrigger SAVEVALUE Dis_3_x 0.6;
+ONENTRY AAAStartTrigger SAVEVALUE Dis_3_y 0.6000000000000001;
+ONSTART DispatchDecisio POST "OBS:OBS-DispatchDecision:{SimTime},{ResourceQueue.CurCount},{_num_trucks},{_num_excavators},{_active_disasters},{_season_idx},{Dis_1_id},{Dis_1_type},{Dis_1_scale},{Dis_1_pct_remaining},{Dis_1_age},{Dis_1_x},{Dis_1_y},{Dis_2_id},{Dis_2_type},{Dis_2_scale},{Dis_2_pct_remaining},{Dis_2_age},{Dis_2_x},{Dis_2_y},{Dis_3_id},{Dis_3_type},{Dis_3_scale},{Dis_3_pct_remaining},{Dis_3_age},{Dis_3_x},{Dis_3_y}";
+ONSTART DispatchDecisio ASSIGN _dispatch_choice GET("GET-d0c42cd2-54a1-409d-abb5-8448d733942e");
+IF _dispatch_choice==0.0 ADDTOQUEUE DispatchDecis_1 1;
+IF _dispatch_choice==1.0 ADDTOQUEUE DispatchDecis_2 1;
+IF _dispatch_choice==2.0 ADDTOQUEUE DispatchDecis_3 1;
+IF _dispatch_choice==3.0 ADDTOQUEUE DispatchDecis_4 1;
+IF _dispatch_choice==4.0 ADDTOQUEUE DispatchDecis_5 1;
+/<CODE>
+
+POSLINK Link1 0 1;
+POSLINK Link2 0 1;
+POSLINK Link3 0 1;
+POSLINK Link4 0 1;
+POSLINK Link5 0 1;
+POSLINK Link6 0 1;
+POSLINK Link7 0 1;
+POSLINK Link8 0 1;
+
+POSNODE AAAStartTrigger 0.0 0.0;
+POSNODE ResourceQueue 200.0 60.0;
+POSNODE ReturnQueue 300.0 90.0;
+POSNODE DispatchDecisio 400.0 120.0;
+POSNODE DispatchDecis_1 500.0 150.0;
+POSNODE DispatchDecis_2 600.0 180.0;
+POSNODE DispatchDecis_3 700.0 210.0;
+POSNODE DispatchDecis_4 800.0 240.0;
+POSNODE DispatchDecis_5 900.0 270.0;
+POSNODE Work_1 1000.0 300.0;
+POSNODE Work_2 1100.0 330.0;
+POSNODE Work_3 1200.0 360.0;
+
+RANKCOUNT 0;

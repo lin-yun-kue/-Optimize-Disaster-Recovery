@@ -1,0 +1,173 @@
+GENTYPE Default;
+
+QUEUE AAAStartTrigger Default;
+QUEUE CrewWaiting Default;
+COMBI PutOutFire;
+QUEUE PutOutFireSemap Default;
+COMBI MoveRubble;
+QUEUE MoveRubbleSemap Default;
+COMBI IntermediateAct;
+QUEUE IntermediateQue Default;
+QUEUE FinalFireCrew Default;
+QUEUE FinalRubbleCrew Default;
+
+LINK Link1 CrewWaiting IntermediateAct;
+LINK Link2 IntermediateAct IntermediateQue;
+LINK Link3 IntermediateQue PutOutFire;
+LINK Link4 PutOutFireSemap PutOutFire;
+LINK Link5 IntermediateQue MoveRubble;
+LINK Link6 MoveRubbleSemap MoveRubble;
+LINK Link7 PutOutFire FinalFireCrew;
+LINK Link8 MoveRubble FinalRubbleCrew;
+
+EZINITIALCONTENT AAAStartTrigger 1;
+EZINITIALCONTENT CrewWaiting 10;
+PRIORITY PutOutFire 0;
+SEMAPHORE PutOutFire 1;
+DURATION PutOutFire 10;
+EZINITIALCONTENT PutOutFireSemap 0;
+PRIORITY MoveRubble 0;
+SEMAPHORE MoveRubble 1;
+DURATION MoveRubble 10;
+EZINITIALCONTENT MoveRubbleSemap 0;
+PRIORITY IntermediateAct 0;
+SEMAPHORE IntermediateAct 1;
+DURATION IntermediateAct 0;
+EZINITIALCONTENT IntermediateQue 0;
+EZINITIALCONTENT FinalFireCrew 0;
+EZINITIALCONTENT FinalRubbleCrew 0;
+
+
+ENOUGH Link1 CurCount>0;
+DRAWUNTIL Link1 nDraws;
+DRAWAMT Link1 1;
+DRAWORDER Link1 1;
+DRAWWHERE Link1 1;
+RELEASEAMT Link1 1;
+RELEASEUNTIL Link1 0;
+RELEASEORDER Link1 1;
+RELEASEWHERE Link1 1;
+STRENGTH Link1 1;
+
+
+ENOUGH Link2 CurCount>0;
+DRAWUNTIL Link2 nDraws;
+DRAWAMT Link2 1;
+DRAWORDER Link2 1;
+DRAWWHERE Link2 1;
+RELEASEAMT Link2 1;
+RELEASEUNTIL Link2 0;
+RELEASEORDER Link2 1;
+RELEASEWHERE Link2 1;
+STRENGTH Link2 1;
+
+
+ENOUGH Link3 CurCount>0;
+DRAWUNTIL Link3 nDraws;
+DRAWAMT Link3 1;
+DRAWORDER Link3 1;
+DRAWWHERE Link3 1;
+RELEASEAMT Link3 1;
+RELEASEUNTIL Link3 0;
+RELEASEORDER Link3 1;
+RELEASEWHERE Link3 1;
+STRENGTH Link3 1;
+
+
+ENOUGH Link4 CurCount>0;
+DRAWUNTIL Link4 nDraws;
+DRAWAMT Link4 1;
+DRAWORDER Link4 1;
+DRAWWHERE Link4 1;
+RELEASEAMT Link4 1;
+RELEASEUNTIL Link4 0;
+RELEASEORDER Link4 1;
+RELEASEWHERE Link4 1;
+STRENGTH Link4 1;
+
+
+ENOUGH Link5 CurCount>0;
+DRAWUNTIL Link5 nDraws;
+DRAWAMT Link5 1;
+DRAWORDER Link5 1;
+DRAWWHERE Link5 1;
+RELEASEAMT Link5 1;
+RELEASEUNTIL Link5 0;
+RELEASEORDER Link5 1;
+RELEASEWHERE Link5 1;
+STRENGTH Link5 1;
+
+
+ENOUGH Link6 CurCount>0;
+DRAWUNTIL Link6 nDraws;
+DRAWAMT Link6 1;
+DRAWORDER Link6 1;
+DRAWWHERE Link6 1;
+RELEASEAMT Link6 1;
+RELEASEUNTIL Link6 0;
+RELEASEORDER Link6 1;
+RELEASEWHERE Link6 1;
+STRENGTH Link6 1;
+
+
+ENOUGH Link7 CurCount>0;
+DRAWUNTIL Link7 nDraws;
+DRAWAMT Link7 1;
+DRAWORDER Link7 1;
+DRAWWHERE Link7 1;
+RELEASEAMT Link7 1;
+RELEASEUNTIL Link7 0;
+RELEASEORDER Link7 1;
+RELEASEWHERE Link7 1;
+STRENGTH Link7 1;
+
+
+ENOUGH Link8 CurCount>0;
+DRAWUNTIL Link8 nDraws;
+DRAWAMT Link8 1;
+DRAWORDER Link8 1;
+DRAWWHERE Link8 1;
+RELEASEAMT Link8 1;
+RELEASEUNTIL Link8 0;
+RELEASEORDER Link8 1;
+RELEASEWHERE Link8 1;
+STRENGTH Link8 1;
+
+
+RANDOMSEED true;
+SEED 0;
+STREAMS 0;
+NUMRUNS 1;
+ENDCOND SimTime>=100000;
+
+/<CODE>
+ONENTRY AAAStartTrigger SAVEVALUE tempVar 0;
+ONSTART IntermediateAct POST "CALLBACK:ONSTART-COMBI-6e4c208b-59c0-468a-add2-68598fc27dad:{SimTime},{IntermediateAct.CurInst},{IntermediateAct.TotInst},{IntermediateAct.AveDur}";
+ONSTART IntermediateAct POSTSIMSTATE;
+ONSTART IntermediateAct ASSIGN tempVar GET("GET-56c61821-3fc8-4759-9119-4121f4c780a3");
+IF tempVar==1.0 ADDTOQUEUE PutOutFireSemap 1;
+IF tempVar==2.0 ADDTOQUEUE MoveRubbleSemap 1;
+IF tempVar>0 ASSIGN tempVar 0;
+/<CODE>
+
+POSLINK Link1 0 1;
+POSLINK Link2 0 1;
+POSLINK Link3 0 1;
+POSLINK Link4 0 1;
+POSLINK Link5 0 1;
+POSLINK Link6 0 1;
+POSLINK Link7 0 1;
+POSLINK Link8 0 1;
+
+POSNODE AAAStartTrigger 0.0 0.0;
+POSNODE CrewWaiting 200.0 60.0;
+POSNODE PutOutFire 300.0 90.0;
+POSNODE PutOutFireSemap 400.0 120.0;
+POSNODE MoveRubble 500.0 150.0;
+POSNODE MoveRubbleSemap 600.0 180.0;
+POSNODE IntermediateAct 700.0 210.0;
+POSNODE IntermediateQue 800.0 240.0;
+POSNODE FinalFireCrew 900.0 270.0;
+POSNODE FinalRubbleCrew 1000.0 300.0;
+
+RANKCOUNT 0;
